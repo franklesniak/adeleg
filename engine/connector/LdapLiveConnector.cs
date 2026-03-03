@@ -7,6 +7,7 @@ using System.Net;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text.RegularExpressions;
+using adeleg.engine;
 
 namespace adeleg.engine.connector
 {
@@ -369,8 +370,9 @@ namespace adeleg.engine.connector
 
                         Log.Info($"Discovered trust partner: {partner} (type: {type})");
 
-                        if (includeDomainsOutsideForest && (type == TrustType.External || type == TrustType.Forest || type == TrustType.Kerberos))
+                        if (!includeDomainsOutsideForest && (type == TrustType.External || type == TrustType.Forest || type == TrustType.Kerberos))
                         {
+                            Log.Verbose($"Skipping trust partner {partner} (external/forest trust, not crawling outside forest)");
                             continue;
                         }
                         if (dnsDomainsCovered.ContainsKey(partner.ToLower()))

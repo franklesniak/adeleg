@@ -55,7 +55,7 @@ namespace adeleg
 
         static List<Result> LoadTemplates(string dirPath)
         {
-            Console.WriteLine($" [.] Loading templates from {dirPath}");
+            Log.Info($"Loading templates from {dirPath}");
             DirectoryInfo dir = new DirectoryInfo(dirPath);
             List<Result> templates = new List<Result>();
             if (dir.Exists)
@@ -84,6 +84,20 @@ namespace adeleg
         [STAThread]
         static int Main(string[] args)
         {
+            // Pre-parse logging flags so Log is available as early as possible
+            bool verbose = false;
+            string logFilePath = null;
+            for (int k = 0; k < args.Length; k++)
+            {
+                if (args[k] == "--verbose" || args[k] == "-v")
+                    verbose = true;
+                else if (args[k] == "--log-file" && k + 1 < args.Length)
+                    logFilePath = args[++k];
+                else
+                    break;
+            }
+            Log.Initialize(verbose || args.Length == 0, logFilePath);
+
             List<Result> templates = LoadTemplates();
 
             if (args.Length > 0)
@@ -135,7 +149,7 @@ namespace adeleg
                     break;
                 }
             }
-            Log.Initialize(verbose, logFilePath);
+            // Log.Initialize() already called in Main()
 
             if (startIndex >= args.Length)
             {
@@ -318,7 +332,7 @@ namespace adeleg
             if (connectform.dataSources.Count > 0)
             {
                 // TODO: multithreading here, with reporting in a GUI status bar
-                Console.WriteLine($" [.] Computing from {connectform.dataSources.Count} data sources...");
+                Log.Info($"Computing from {connectform.dataSources.Count} data sources...");
                 foreach (string partitionDN in engine.ListPartitionDNs())
                 {
                     results.AddRange(engine.Scan(partitionDN, true));
@@ -326,10 +340,11 @@ namespace adeleg
             }
             else
             {
-                Console.WriteLine(" [.] Showing cached results only");
+                Log.Info("Showing cached results only");
             }
 
             Application.Run(new TreeWindow(results, new HashSet<string>(engine.ListPartitionDNs())));
+            Log.Close();
             return 0;
         }
     }

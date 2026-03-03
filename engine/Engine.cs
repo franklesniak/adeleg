@@ -92,6 +92,11 @@ namespace adeleg.engine
             }
             foreach (string forestDN in forestRootPerNamingContext.Values)
             {
+                if (string.IsNullOrEmpty(forestDN))
+                {
+                    Log.Error("A data source returned a null or empty rootDomainNamingContext. This usually means the domain controller's RootDSE did not include the rootDomainNamingContext attribute.");
+                    throw new Exception("A data source returned a null or empty forest root DN (rootDomainNamingContext). Ensure the domain controller is reachable and returns valid RootDSE information.");
+                }
                 if (!dataSourcePerNamingContext.ContainsKey(forestDN))
                 {
                     Log.Error($"Forest root DN '{forestDN}' is not among the registered partition DNs");
