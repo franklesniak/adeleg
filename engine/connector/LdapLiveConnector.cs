@@ -400,12 +400,12 @@ namespace adeleg.engine.connector
         internal static void CrawlDomainsAcrossTrusts(List<IConnector> dataSources, bool includeDomainsOutsideForest)
         {
             // Enumerate all DNS domains we already have
-            Dictionary<string, LdapLiveConnector> dnsDomainsCovered = new Dictionary<string, LdapLiveConnector>();
+            Dictionary<string, LdapLiveConnector> dnsDomainsCovered = new Dictionary<string, LdapLiveConnector>(StringComparer.OrdinalIgnoreCase);
             foreach (LdapLiveConnector conn in dataSources.Cast<LdapLiveConnector>())
             {
                 foreach (string partitionDN in conn.GetPartitionDNs())
                 {
-                    string dnsName = partitionDN.Replace(",", ".").Replace("DC=", "").ToLower();
+                    string dnsName = partitionDN.Replace(",", ".").Replace("DC=", "");
                     dnsDomainsCovered[dnsName] = conn;
                 }
             }
@@ -440,7 +440,7 @@ namespace adeleg.engine.connector
                             Log.Verbose($"Skipping trust partner {partner} (external/forest trust, not crawling outside forest)");
                             continue;
                         }
-                        if (dnsDomainsCovered.ContainsKey(partner.ToLower()))
+                        if (dnsDomainsCovered.ContainsKey(partner))
                         {
                             Log.Verbose($"Skipping trust partner {partner} (already covered)");
                             continue;
@@ -450,7 +450,7 @@ namespace adeleg.engine.connector
                         Log.Info($"Connecting to trust partner {partner} via DC {dc.IPAddress}");
                         var newConnector = new LdapLiveConnector(dc.IPAddress, 389, dataSource.creds); // reuse same credentials as the trust party we already have
                         dataSources.Add(newConnector);
-                        dnsDomainsCovered[partner.ToLower()] = newConnector;
+                        dnsDomainsCovered[partner] = newConnector;
                     }
                 }
             }
