@@ -10,7 +10,12 @@ namespace adeleg.engine
         public static void Initialize(bool consoleEnabled, string logFilePath)
         {
             if (!consoleEnabled && string.IsNullOrEmpty(logFilePath))
+            {
+                Close();
                 return;
+            }
+
+            Close();
 
             traceSource = new TraceSource("adeleg", SourceLevels.Verbose);
             traceSource.Listeners.Clear();
@@ -31,33 +36,43 @@ namespace adeleg.engine
         public static void Verbose(string message)
         {
             if (traceSource == null) return;
-            traceSource.TraceEvent(TraceEventType.Verbose, 0,
-                DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.fff") + " [VERBOSE] " + message);
-            traceSource.Flush();
+            string line = string.Format("{0} [VERBOSE] {1}", DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.fff"), message);
+            foreach (TraceListener listener in traceSource.Listeners)
+            {
+                listener.WriteLine(line);
+            }
         }
 
         public static void Info(string message)
         {
             if (traceSource == null) return;
-            traceSource.TraceEvent(TraceEventType.Information, 0,
-                DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.fff") + " [INFO] " + message);
-            traceSource.Flush();
+            string line = string.Format("{0} [INFO] {1}", DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.fff"), message);
+            foreach (TraceListener listener in traceSource.Listeners)
+            {
+                listener.WriteLine(line);
+            }
         }
 
         public static void Warn(string message)
         {
             if (traceSource == null) return;
-            traceSource.TraceEvent(TraceEventType.Warning, 0,
-                DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.fff") + " [WARN] " + message);
-            traceSource.Flush();
+            string line = string.Format("{0} [WARN] {1}", DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.fff"), message);
+            foreach (TraceListener listener in traceSource.Listeners)
+            {
+                listener.WriteLine(line);
+                listener.Flush();
+            }
         }
 
         public static void Error(string message)
         {
             if (traceSource == null) return;
-            traceSource.TraceEvent(TraceEventType.Error, 0,
-                DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.fff") + " [ERROR] " + message);
-            traceSource.Flush();
+            string line = string.Format("{0} [ERROR] {1}", DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.fff"), message);
+            foreach (TraceListener listener in traceSource.Listeners)
+            {
+                listener.WriteLine(line);
+                listener.Flush();
+            }
         }
 
         public static void Close()
