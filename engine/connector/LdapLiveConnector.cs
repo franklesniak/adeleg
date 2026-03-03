@@ -433,7 +433,9 @@ namespace adeleg.engine.connector
                         var ctx2 = new DirectoryContext(DirectoryContextType.Domain, partner);
                         var dc = DomainController.FindOne(ctx2, LocatorOptions.ForceRediscovery | LocatorOptions.WriteableRequired);
                         Log.Info($"Connecting to trust partner {partner} via DC {dc.IPAddress}");
-                        dataSources.Add(new LdapLiveConnector(dc.IPAddress, 389, dataSource.creds)); // reuse same credentials as the trust party we already have
+                        var newConnector = new LdapLiveConnector(dc.IPAddress, 389, dataSource.creds); // reuse same credentials as the trust party we already have
+                        dataSources.Add(newConnector);
+                        dnsDomainsCovered[partner.ToLower()] = newConnector;
                     }
                 }
             }
