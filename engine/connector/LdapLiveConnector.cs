@@ -96,12 +96,7 @@ namespace adeleg.engine.connector
 
             if (res == null)
             {
-                Log.Warn("RootDSE query did not return any entries");
-                this.schemaNC = null;
-                this.configurationNC = null;
-                this.rootDomainNC = null;
-                this.partitionDNs = new string[0];
-                return;
+                throw new Exception("RootDSE query did not return any entries. Ensure the domain controller is reachable and returns valid RootDSE information.");
             }
 
             var attrs = res.Attributes;
@@ -112,8 +107,7 @@ namespace adeleg.engine.connector
             }
             else
             {
-                this.schemaNC = null;
-                Log.Warn("RootDSE did not return 'schemaNamingContext' attribute");
+                throw new Exception("RootDSE did not return 'schemaNamingContext' attribute. Ensure the domain controller is reachable and returns valid RootDSE information.");
             }
             Log.Verbose($"RootDSE schemaNamingContext = {this.schemaNC ?? "(null)"}");
 
@@ -123,8 +117,7 @@ namespace adeleg.engine.connector
             }
             else
             {
-                this.configurationNC = null;
-                Log.Warn("RootDSE did not return 'configurationNamingContext' attribute");
+                throw new Exception("RootDSE did not return 'configurationNamingContext' attribute. Ensure the domain controller is reachable and returns valid RootDSE information.");
             }
             Log.Verbose($"RootDSE configurationNamingContext = {this.configurationNC ?? "(null)"}");
 
@@ -147,8 +140,7 @@ namespace adeleg.engine.connector
             }
             else
             {
-                this.partitionDNs = new string[0];
-                Log.Warn("RootDSE did not return 'namingContexts' attribute");
+                throw new Exception("RootDSE did not return 'namingContexts' attribute. Ensure the domain controller is reachable and returns valid RootDSE information.");
             }
             for (int i = 0; i < this.partitionDNs.Length; i++)
                 Log.Verbose($"RootDSE namingContext[{i}] = {this.partitionDNs[i]}");
