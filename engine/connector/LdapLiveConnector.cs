@@ -29,6 +29,7 @@ namespace adeleg.engine.connector
             this.creds = creds;
 
             var srv = new LdapDirectoryIdentifier(server, port, false, false);
+            Log.Info($"Connecting to LDAP server {server}:{port}");
             if (creds == null)
             {
                 this.connection = new LdapConnection(srv);
@@ -42,6 +43,8 @@ namespace adeleg.engine.connector
             this.connection.SessionOptions.Signing = true;
 
             this.connection.Bind();
+            Log.Info($"LDAP Bind() successful to {server}:{port}");
+            Log.Verbose(creds == null ? "Using Windows integrated authentication" : $"Using explicit credentials for {creds.Domain}\\{creds.UserName}");
 
             this.PrefetchRootDseInformation();
             this.PrefetchDomainSIDs();
@@ -90,9 +93,16 @@ namespace adeleg.engine.connector
                          "(objectClass=*)",
                          new string[] { "schemaNamingContext", "configurationNamingContext", "rootDomainNamingContext", "namingContexts" }).First();
             this.schemaNC = (string)res.Attributes["schemaNamingContext"].GetValues(typeof(string)).FirstOrDefault();
+            Log.Verbose($"RootDSE schemaNamingContext = {this.schemaNC ?? "(null)"}");
             this.configurationNC = (string)res.Attributes["configurationNamingContext"].GetValues(typeof(string)).FirstOrDefault();
+            Log.Verbose($"RootDSE configurationNamingContext = {this.configurationNC ?? "(null)"}");
             this.rootDomainNC = (string)res.Attributes["rootDomainNamingContext"].GetValues(typeof(string)).FirstOrDefault();
+            Log.Verbose($"RootDSE rootDomainNamingContext = {this.rootDomainNC ?? "(null)"}");
+            if (this.rootDomainNC == null)
+                Log.Warn("rootDomainNamingContext was not returned by the domain controller's RootDSE");
             this.partitionDNs = (string[])res.Attributes["namingContexts"].GetValues(typeof(string));
+            for (int i = 0; i < this.partitionDNs.Length; i++)
+                Log.Verbose($"RootDSE namingContext[{i}] = {this.partitionDNs[i]}");
         }
 
         private void PrefetchDomainSIDs()
@@ -105,6 +115,11 @@ namespace adeleg.engine.connector
                     byte[] sidBytes = (byte[])res.First().Attributes["objectSid"].GetValues(typeof(byte[]))[0];
                     SecurityIdentifier sid = new SecurityIdentifier(sidBytes, 0);
                     this.domainSidPerPartitionDn.Add(partitionDN, sid);
+                    Log.Verbose($"Partition {partitionDN} has domain SID {sid}");
+                }
+                else
+                {
+                    Log.Verbose($"Partition {partitionDN} has no objectSid (not a domain partition)");
                 }
             }
         }
@@ -117,6 +132,7 @@ namespace adeleg.engine.connector
                 byte[] bytes = (byte[])res.Attributes["ntSecurityDescriptor"].GetValues(typeof(byte[]))[0];
                 CommonSecurityDescriptor sd = new CommonSecurityDescriptor(true, true, bytes, 0);
                 this.adminSDHolderPerPartitionDn.Add(partitionDN, sd);
+                Log.Verbose($"Retrieved AdminSDHolder security descriptor for {partitionDN}");
             }
         }
 
@@ -283,10 +299,12 @@ namespace adeleg.engine.connector
             {
                 var ctx = new DirectoryContext(DirectoryContextType.Domain);
                 var dc = DomainController.FindOne(ctx, LocatorOptions.ForceRediscovery | LocatorOptions.WriteableRequired);
+                Log.Info($"Auto-located domain controller: {dc.Name}");
                 return dc.Name;
             }
             catch (Exception)
             {
+                Log.Warn("Failed to auto-locate a domain controller via DC Locator");
                 return null;
             }
         }
@@ -349,16 +367,20 @@ namespace adeleg.engine.connector
                         string partner = (string)trust.Attributes["trustPartner"].GetValues(typeof(string)).FirstOrDefault();
                         TrustType type = (TrustType)Enum.Parse(typeof(TrustType), (string)trust.Attributes["trustType"].GetValues(typeof(string)).FirstOrDefault());
 
+                        Log.Info($"Discovered trust partner: {partner} (type: {type})");
+
                         if (includeDomainsOutsideForest && (type == TrustType.External || type == TrustType.Forest || type == TrustType.Kerberos))
                         {
                             continue;
                         }
                         if (dnsDomainsCovered.ContainsKey(partner.ToLower()))
                         {
+                            Log.Verbose($"Skipping trust partner {partner} (already covered)");
                             continue;
                         }
                         var ctx2 = new DirectoryContext(DirectoryContextType.Domain, partner);
                         var dc = DomainController.FindOne(ctx2, LocatorOptions.ForceRediscovery | LocatorOptions.WriteableRequired);
+                        Log.Info($"Connecting to trust partner {partner} via DC {dc.IPAddress}");
                         dataSources.Add(new LdapLiveConnector(dc.IPAddress, 389, dataSource.creds)); // reuse same credentials as the trust party we already have
                     }
                 }

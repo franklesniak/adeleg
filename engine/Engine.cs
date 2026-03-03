@@ -87,12 +87,18 @@ namespace adeleg.engine
                     // If two sources provide the same partition, only one is kept (random)
                     dataSourcePerNamingContext[partitionDN] = dataSource;
                     forestRootPerNamingContext[partitionDN] = forestDN;
+                    Log.Info($"Registering partition '{partitionDN}' with forest root '{forestDN}'");
                 }
             }
             foreach (string forestDN in forestRootPerNamingContext.Values)
             {
                 if (!dataSourcePerNamingContext.ContainsKey(forestDN))
                 {
+                    Log.Error($"Forest root DN '{forestDN}' is not among the registered partition DNs");
+                    Log.Error("Registered partition DNs:");
+                    foreach (string key in dataSourcePerNamingContext.Keys)
+                        Log.Error($"  - {key}");
+                    Log.Error("This typically occurs when connecting to a child domain DC in a multi-domain forest. The child DC's RootDSE reports the forest root as rootDomainNamingContext, but the forest root's naming context is not among the namingContexts hosted by this DC.");
                     throw new Exception($"Root domain {forestDN} needs to be included in data inputs to be scanned");
                 }
             }
@@ -125,7 +131,7 @@ namespace adeleg.engine
                     Tuple<ObjectClass, string, string> resolved = this.ResolveFromSid(forest.Key, sid);
                     if (resolved == null || (resolved.Item2 == null && resolved.Item3 == null))
                     {
-                        Console.WriteLine($" [!] Warning: unable to resolve {sid} in {forest.Key}");
+                        Log.Warn($"Unable to resolve {sid} in {forest.Key}");
                         continue;
                     }
 
@@ -136,7 +142,7 @@ namespace adeleg.engine
                             SecurityIdentifier memberSid = ResolveDnToSid(memberDN);
                             if (memberSid == null)
                             {
-                                Console.WriteLine($" [!] Warning: unable to resolve {memberDN} to a SID");
+                                Log.Warn($"Unable to resolve {memberDN} to a SID");
                                 continue;
                             }
 
@@ -149,7 +155,9 @@ namespace adeleg.engine
 
         private ForestMetadata ScanForestMetadata(string forestDN, IConnector rootDomainDataSource)
         {
+            Log.Info($"Scanning forest metadata for '{forestDN}'");
             SecurityIdentifier forestSid = rootDomainDataSource.GetDomainSidByPartitionDN(forestDN);
+            Log.Verbose($"Forest SID for '{forestDN}' = {forestSid}");
 
             ForestMetadata res = new ForestMetadata
             {
