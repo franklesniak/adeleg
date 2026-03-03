@@ -20,6 +20,10 @@ namespace adeleg
             Console.WriteLine("");
             Console.WriteLine("Usage: adeleg.exe (without options to start a GUI)");
             Console.WriteLine("");
+            Console.WriteLine("Global options:");
+            Console.WriteLine("       adeleg.exe [--verbose|-v] (to enable diagnostic logging to stderr)");
+            Console.WriteLine("                  [--log-file <path>] (to write diagnostic logs to a file)");
+            Console.WriteLine("");
             Console.WriteLine("       adeleg.exe ldap [--server|-s <server>] (to override the default DC locator)");
             Console.WriteLine("                       [--username|-u <username>] (to not use the default Windows SSO)");
             Console.WriteLine("                       [--domain|-d <domain>] (user's domain name, when using -u)");
@@ -109,7 +113,31 @@ namespace adeleg
             List<Result> results = new List<Result>();
             bool generalize = false;
 
-            for (int i = 0; i < args.Length; i++)
+            bool verbose = false;
+            string logFilePath = null;
+            int startIndex = 0;
+            for (int k = 0; k < args.Length; k++)
+            {
+                if (args[k] == "--verbose" || args[k] == "-v")
+                {
+                    verbose = true;
+                    startIndex = k + 1;
+                }
+                else if (args[k] == "--log-file")
+                {
+                    if (k + 1 >= args.Length)
+                        return FailWithError("file path required after --log-file");
+                    logFilePath = args[++k];
+                    startIndex = k + 1;
+                }
+                else
+                {
+                    break;
+                }
+            }
+            Log.Initialize(verbose, logFilePath);
+
+            for (int i = startIndex; i < args.Length; i++)
             {
                 if (args[i] == "--help" || args[i] == "-h" || args[i] == "-?")
                 {
@@ -250,6 +278,7 @@ namespace adeleg
                 Console.WriteLine(res.ToJson());
             }
 
+            Log.Close();
             return 0;
         }
 
@@ -260,6 +289,7 @@ namespace adeleg
             Console.Error.WriteLine("Error, cannot continue: {0}", err);
             Console.Error.WriteLine("===============");
             Console.Error.WriteLine("");
+            Log.Close();
             return 1;
         }
 
