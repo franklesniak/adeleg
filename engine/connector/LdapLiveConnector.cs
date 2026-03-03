@@ -109,7 +109,11 @@ namespace adeleg.engine.connector
             {
                 throw new Exception("RootDSE did not return 'schemaNamingContext' attribute. Ensure the domain controller is reachable and returns valid RootDSE information.");
             }
-            Log.Verbose($"RootDSE schemaNamingContext = {this.schemaNC ?? "(null)"}");
+            if (string.IsNullOrEmpty(this.schemaNC))
+            {
+                throw new Exception("RootDSE returned a null or empty 'schemaNamingContext' value. Ensure the domain controller is reachable and returns valid RootDSE information.");
+            }
+            Log.Verbose($"RootDSE schemaNamingContext = {this.schemaNC}");
 
             if (attrs.Contains("configurationNamingContext"))
             {
@@ -119,7 +123,11 @@ namespace adeleg.engine.connector
             {
                 throw new Exception("RootDSE did not return 'configurationNamingContext' attribute. Ensure the domain controller is reachable and returns valid RootDSE information.");
             }
-            Log.Verbose($"RootDSE configurationNamingContext = {this.configurationNC ?? "(null)"}");
+            if (string.IsNullOrEmpty(this.configurationNC))
+            {
+                throw new Exception("RootDSE returned a null or empty 'configurationNamingContext' value. Ensure the domain controller is reachable and returns valid RootDSE information.");
+            }
+            Log.Verbose($"RootDSE configurationNamingContext = {this.configurationNC}");
 
             if (attrs.Contains("rootDomainNamingContext"))
             {
@@ -137,10 +145,15 @@ namespace adeleg.engine.connector
             if (attrs.Contains("namingContexts"))
             {
                 this.partitionDNs = (string[])attrs["namingContexts"].GetValues(typeof(string));
+                this.partitionDNs = this.partitionDNs.Where(dn => !string.IsNullOrEmpty(dn)).ToArray();
             }
             else
             {
                 throw new Exception("RootDSE did not return 'namingContexts' attribute. Ensure the domain controller is reachable and returns valid RootDSE information.");
+            }
+            if (this.partitionDNs.Length == 0)
+            {
+                throw new Exception("RootDSE returned no valid 'namingContexts' entries. Ensure the domain controller is reachable and returns valid RootDSE information.");
             }
             for (int i = 0; i < this.partitionDNs.Length; i++)
                 Log.Verbose($"RootDSE namingContext[{i}] = {this.partitionDNs[i]}");
@@ -404,6 +417,16 @@ namespace adeleg.engine.connector
                 LdapLiveConnector dataSource = (LdapLiveConnector)dataSources[idx];
                 foreach (string partitionDN in dataSource.GetPartitionDNs())
                 {
+                    // Skip non-domain partitions (schema, config, DNS app partitions) since
+                    // trust objects only exist under CN=System in domain partitions.
+                    if (partitionDN.Equals(dataSource.GetSchemaNC(), StringComparison.OrdinalIgnoreCase) ||
+                        partitionDN.Equals(dataSource.GetConfigurationNC(), StringComparison.OrdinalIgnoreCase) ||
+                        partitionDN.StartsWith("DC=DomainDnsZones,", StringComparison.OrdinalIgnoreCase) ||
+                        partitionDN.StartsWith("DC=ForestDnsZones,", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Log.Verbose($"Skipping non-domain partition {partitionDN} for trust enumeration");
+                        continue;
+                    }
                     var trusts = dataSource.GetLdapRecords("CN=System," + partitionDN, SearchScope.Subtree, "(trustPartner=*)", new string[] { "trustPartner", "trustType" });
                     foreach (SearchResultEntry trust in trusts)
                     {

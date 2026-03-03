@@ -71,9 +71,9 @@ namespace adeleg.engine
             "{domainSid}-521", // Read-Only Domain Controllers
         };
         private List<Result> templates;
-        private Dictionary<string, IConnector> dataSourcePerNamingContext = new Dictionary<string, IConnector>();
-        private Dictionary<string, string> forestRootPerNamingContext = new Dictionary<string, string>();
-        private Dictionary<string, ForestMetadata> metadataPerForest = new Dictionary<string, ForestMetadata>();
+        private Dictionary<string, IConnector> dataSourcePerNamingContext = new Dictionary<string, IConnector>(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, string> forestRootPerNamingContext = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, ForestMetadata> metadataPerForest = new Dictionary<string, ForestMetadata>(StringComparer.OrdinalIgnoreCase);
 
         public Engine(IEnumerable<IConnector> dataSources, List<Result> templates)
         {
