@@ -80,6 +80,7 @@
     <Compile Include="engine\connector\LdapLiveConnector.cs" />
     <Compile Include="engine\connector\OradadConnector.cs" />
     <Compile Include="engine\Engine.cs" />
+    <Compile Include="engine\Logging.cs" />
     <Compile Include="engine\Result.cs" />
     <Compile Include="engine\ResultLocation.cs" />
     <Compile Include="engine\ResultTrustee.cs" />
