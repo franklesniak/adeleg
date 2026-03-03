@@ -405,12 +405,14 @@ namespace adeleg.engine.connector
                 }
             }
 
-            // Now, for each domain partition, enumerate trusts and crawl domains not already covered
-            foreach (LdapLiveConnector dataSource in dataSources.Cast<LdapLiveConnector>())
+            // Now, for each domain partition, enumerate trusts and crawl domains not already covered.
+            // Use a for loop with index because new connectors may be added during iteration.
+            for (int idx = 0; idx < dataSources.Count; idx++)
             {
+                LdapLiveConnector dataSource = (LdapLiveConnector)dataSources[idx];
                 foreach (string partitionDN in dataSource.GetPartitionDNs())
                 {
-                    var trusts = dataSource.GetLdapRecords("CN=System" + partitionDN, SearchScope.Subtree, "(trustPartner=*)", new string[] { "trustPartner", "trustType" });
+                    var trusts = dataSource.GetLdapRecords("CN=System," + partitionDN, SearchScope.Subtree, "(trustPartner=*)", new string[] { "trustPartner", "trustType" });
                     foreach (SearchResultEntry trust in trusts)
                     {
                         string partner = (string)trust.Attributes["trustPartner"].GetValues(typeof(string)).FirstOrDefault();
