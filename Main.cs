@@ -96,7 +96,18 @@ namespace adeleg
                 else
                     break;
             }
-            Log.Initialize(verbose || args.Length == 0, logFilePath);
+#if !DEBUG
+            try
+            {
+#endif
+                Log.Initialize(verbose || args.Length == 0, logFilePath);
+#if !DEBUG
+            }
+            catch (Exception exc)
+            {
+                return FailWithError(exc.Message);
+            }
+#endif
 
             List<Result> templates = LoadTemplates();
 
@@ -127,21 +138,19 @@ namespace adeleg
             List<Result> results = new List<Result>();
             bool generalize = false;
 
-            bool verbose = false;
-            string logFilePath = null;
+            // Log.Initialize() already called in Main(); just compute startIndex
             int startIndex = 0;
             for (int k = 0; k < args.Length; k++)
             {
                 if (args[k] == "--verbose" || args[k] == "-v")
                 {
-                    verbose = true;
                     startIndex = k + 1;
                 }
                 else if (args[k] == "--log-file")
                 {
                     if (k + 1 >= args.Length)
                         return FailWithError("file path required after --log-file");
-                    logFilePath = args[++k];
+                    ++k;
                     startIndex = k + 1;
                 }
                 else
@@ -149,7 +158,6 @@ namespace adeleg
                     break;
                 }
             }
-            // Log.Initialize() already called in Main()
 
             if (startIndex >= args.Length)
             {
@@ -323,6 +331,7 @@ namespace adeleg
             var res = connectform.ShowDialog();
             if (res != DialogResult.OK)
             {
+                Log.Close();
                 Environment.Exit(1);
             }
 

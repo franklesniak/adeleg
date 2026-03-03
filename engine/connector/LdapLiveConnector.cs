@@ -92,16 +92,64 @@ namespace adeleg.engine.connector
         {
             var res = GetLdapRecords(schemaNC, SearchScope.Base,
                          "(objectClass=*)",
-                         new string[] { "schemaNamingContext", "configurationNamingContext", "rootDomainNamingContext", "namingContexts" }).First();
-            this.schemaNC = (string)res.Attributes["schemaNamingContext"].GetValues(typeof(string)).FirstOrDefault();
+                         new string[] { "schemaNamingContext", "configurationNamingContext", "rootDomainNamingContext", "namingContexts" }).FirstOrDefault();
+
+            if (res == null)
+            {
+                Log.Warn("RootDSE query did not return any entries");
+                this.schemaNC = null;
+                this.configurationNC = null;
+                this.rootDomainNC = null;
+                this.partitionDNs = new string[0];
+                return;
+            }
+
+            var attrs = res.Attributes;
+
+            if (attrs.Contains("schemaNamingContext"))
+            {
+                this.schemaNC = (string)attrs["schemaNamingContext"].GetValues(typeof(string)).FirstOrDefault();
+            }
+            else
+            {
+                this.schemaNC = null;
+                Log.Warn("RootDSE did not return 'schemaNamingContext' attribute");
+            }
             Log.Verbose($"RootDSE schemaNamingContext = {this.schemaNC ?? "(null)"}");
-            this.configurationNC = (string)res.Attributes["configurationNamingContext"].GetValues(typeof(string)).FirstOrDefault();
+
+            if (attrs.Contains("configurationNamingContext"))
+            {
+                this.configurationNC = (string)attrs["configurationNamingContext"].GetValues(typeof(string)).FirstOrDefault();
+            }
+            else
+            {
+                this.configurationNC = null;
+                Log.Warn("RootDSE did not return 'configurationNamingContext' attribute");
+            }
             Log.Verbose($"RootDSE configurationNamingContext = {this.configurationNC ?? "(null)"}");
-            this.rootDomainNC = (string)res.Attributes["rootDomainNamingContext"].GetValues(typeof(string)).FirstOrDefault();
+
+            if (attrs.Contains("rootDomainNamingContext"))
+            {
+                this.rootDomainNC = (string)attrs["rootDomainNamingContext"].GetValues(typeof(string)).FirstOrDefault();
+            }
+            else
+            {
+                this.rootDomainNC = null;
+                Log.Warn("RootDSE did not return 'rootDomainNamingContext' attribute");
+            }
             Log.Verbose($"RootDSE rootDomainNamingContext = {this.rootDomainNC ?? "(null)"}");
             if (this.rootDomainNC == null)
                 Log.Warn("rootDomainNamingContext was not returned by the domain controller's RootDSE");
-            this.partitionDNs = (string[])res.Attributes["namingContexts"].GetValues(typeof(string));
+
+            if (attrs.Contains("namingContexts"))
+            {
+                this.partitionDNs = (string[])attrs["namingContexts"].GetValues(typeof(string));
+            }
+            else
+            {
+                this.partitionDNs = new string[0];
+                Log.Warn("RootDSE did not return 'namingContexts' attribute");
+            }
             for (int i = 0; i < this.partitionDNs.Length; i++)
                 Log.Verbose($"RootDSE namingContext[{i}] = {this.partitionDNs[i]}");
         }
