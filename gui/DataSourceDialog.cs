@@ -41,7 +41,7 @@ namespace adeleg.gui
             {
                 var ctx = new DirectoryContext(DirectoryContextType.Domain);
                 var dc = DomainController.FindOne(ctx, LocatorOptions.ForceRediscovery | LocatorOptions.WriteableRequired);
-                Log.Info($"Computer is AD-joined, can use DC : {dc}");
+                Console.WriteLine($" [+] Computer is AD-joined, can use DC : {dc}");
                 this.currentDomainViaDcLocator.Checked = true;
                 this.implicitCredentials.Checked = true;
                 this.currentDomainViaDcLocator.Checked = true;
@@ -50,7 +50,7 @@ namespace adeleg.gui
                 this.ActiveControl = this.connectButton;
             }
             catch (Exception) {
-                Log.Info("Computer is not AD-joined or could not locate a domain controller, please input server path and credentials");
+                Console.WriteLine(" [.] Computer is not AD-joined or could not locate a domain controller, please input server path and credentials");
                 this.useExplicitCredentials.Checked = true;
                 this.useExplicitDomainList.Checked = true;
                 this.currentDomainViaDcLocator.Enabled = false;

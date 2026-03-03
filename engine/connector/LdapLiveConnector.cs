@@ -109,10 +109,10 @@ namespace adeleg.engine.connector
         {
             foreach (string partitionDN in this.partitionDNs)
             {
-                var res = GetLdapRecords(partitionDN, SearchScope.Base, "(objectSid=*)", new string[] { "objectSid" });
-                if (res.Count() > 0)
+                SearchResultEntry entry = GetLdapRecords(partitionDN, SearchScope.Base, "(objectSid=*)", new string[] { "objectSid" }).FirstOrDefault();
+                if (entry != null)
                 {
-                    byte[] sidBytes = (byte[])res.First().Attributes["objectSid"].GetValues(typeof(byte[]))[0];
+                    byte[] sidBytes = (byte[])entry.Attributes["objectSid"].GetValues(typeof(byte[]))[0];
                     SecurityIdentifier sid = new SecurityIdentifier(sidBytes, 0);
                     this.domainSidPerPartitionDn.Add(partitionDN, sid);
                     Log.Verbose($"Partition {partitionDN} has domain SID {sid}");

@@ -55,7 +55,7 @@ namespace adeleg
 
         static List<Result> LoadTemplates(string dirPath)
         {
-            Log.Info($"Loading templates from {dirPath}");
+            Console.WriteLine($" [.] Loading templates from {dirPath}");
             DirectoryInfo dir = new DirectoryInfo(dirPath);
             List<Result> templates = new List<Result>();
             if (dir.Exists)
@@ -318,7 +318,7 @@ namespace adeleg
             if (connectform.dataSources.Count > 0)
             {
                 // TODO: multithreading here, with reporting in a GUI status bar
-                Log.Info($"Computing from {connectform.dataSources.Count} data sources...");
+                Console.WriteLine($" [.] Computing from {connectform.dataSources.Count} data sources...");
                 foreach (string partitionDN in engine.ListPartitionDNs())
                 {
                     results.AddRange(engine.Scan(partitionDN, true));
@@ -326,7 +326,7 @@ namespace adeleg
             }
             else
             {
-                Log.Info("Showing cached results only");
+                Console.WriteLine(" [.] Showing cached results only");
             }
 
             Application.Run(new TreeWindow(results, new HashSet<string>(engine.ListPartitionDNs())));
