@@ -137,6 +137,13 @@ namespace adeleg
             }
             Log.Initialize(verbose, logFilePath);
 
+            if (startIndex >= args.Length)
+            {
+                ShowUsage();
+                Log.Close();
+                return 1;
+            }
+
             for (int i = startIndex; i < args.Length; i++)
             {
                 if (args[i] == "--help" || args[i] == "-h" || args[i] == "-?")

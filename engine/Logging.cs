@@ -9,7 +9,7 @@ namespace adeleg.engine
 
         public static void Initialize(bool consoleEnabled, string logFilePath)
         {
-            if (!consoleEnabled && string.IsNullOrEmpty(logFilePath))
+            if (!consoleEnabled && string.IsNullOrWhiteSpace(logFilePath))
             {
                 Close();
                 return;
@@ -26,7 +26,7 @@ namespace adeleg.engine
                 traceSource.Listeners.Add(consoleListener);
             }
 
-            if (!string.IsNullOrEmpty(logFilePath))
+            if (!string.IsNullOrWhiteSpace(logFilePath))
             {
                 var fileListener = new TextWriterTraceListener(logFilePath);
                 traceSource.Listeners.Add(fileListener);
