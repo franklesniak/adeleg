@@ -171,6 +171,7 @@ namespace adeleg
                 if (args[i] == "--help" || args[i] == "-h" || args[i] == "-?")
                 {
                     ShowUsage();
+                    Log.Close();
                     return 1;
                 }
                 else if (args[i] == "--generalize")
