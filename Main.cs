@@ -97,10 +97,13 @@ namespace adeleg
                     break;
             }
 #if !DEBUG
+            // In release builds, catch Log.Initialize failures (e.g. invalid --log-file path)
+            // so they surface as friendly errors via FailWithError instead of unhandled exceptions.
+            // In debug builds, let exceptions propagate for full stack trace visibility.
             try
             {
 #endif
-                Log.Initialize(verbose || args.Length == 0, logFilePath);
+                Log.Initialize(verbose, logFilePath);
 #if !DEBUG
             }
             catch (Exception exc)

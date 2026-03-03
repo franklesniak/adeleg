@@ -45,7 +45,7 @@ namespace adeleg.engine.connector
 
             this.connection.Bind();
             Log.Info($"LDAP Bind() successful to {server}:{port}");
-            Log.Verbose(creds == null ? "Using Windows integrated authentication" : $"Using explicit credentials for {creds.Domain}\\{creds.UserName}");
+            Log.Verbose(creds == null ? "Using Windows integrated authentication" : "Using explicit credentials");
 
             this.PrefetchRootDseInformation();
             this.PrefetchDomainSIDs();
