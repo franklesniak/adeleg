@@ -90,7 +90,7 @@ namespace adeleg.engine
                     Log.Info($"Registering partition '{partitionDN}' with forest root '{forestDN}'");
                 }
             }
-            foreach (string forestDN in forestRootPerNamingContext.Values.Distinct())
+            foreach (string forestDN in forestRootPerNamingContext.Values.Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 if (string.IsNullOrEmpty(forestDN))
                 {
