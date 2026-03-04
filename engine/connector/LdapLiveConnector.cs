@@ -135,12 +135,13 @@ namespace adeleg.engine.connector
             }
             else
             {
-                this.rootDomainNC = null;
-                Log.Warn("RootDSE did not return 'rootDomainNamingContext' attribute");
+                throw new Exception("RootDSE did not return 'rootDomainNamingContext' attribute. Ensure the domain controller is reachable and returns valid RootDSE information.");
             }
-            Log.Verbose($"RootDSE rootDomainNamingContext = {this.rootDomainNC ?? "(null)"}");
-            if (this.rootDomainNC == null)
-                Log.Warn("rootDomainNamingContext was not returned by the domain controller's RootDSE");
+            if (string.IsNullOrEmpty(this.rootDomainNC))
+            {
+                throw new Exception("RootDSE returned a null or empty 'rootDomainNamingContext' value. Ensure the domain controller is reachable and returns valid RootDSE information.");
+            }
+            Log.Verbose($"RootDSE rootDomainNamingContext = {this.rootDomainNC}");
 
             if (attrs.Contains("namingContexts"))
             {
