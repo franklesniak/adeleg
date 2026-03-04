@@ -55,7 +55,7 @@ namespace adeleg
 
         static List<Result> LoadTemplates(string dirPath)
         {
-            Console.WriteLine($" [.] Loading templates from {dirPath}");
+            Log.Info($"Loading templates from {dirPath}");
             DirectoryInfo dir = new DirectoryInfo(dirPath);
             List<Result> templates = new List<Result>();
             if (dir.Exists)
@@ -84,6 +84,34 @@ namespace adeleg
         [STAThread]
         static int Main(string[] args)
         {
+            // Pre-parse logging flags so Log is available as early as possible
+            bool verbose = false;
+            string logFilePath = null;
+            for (int k = 0; k < args.Length; k++)
+            {
+                if (args[k] == "--verbose" || args[k] == "-v")
+                    verbose = true;
+                else if (args[k] == "--log-file" && k + 1 < args.Length)
+                    logFilePath = args[++k];
+                else
+                    break;
+            }
+#if !DEBUG
+            // In release builds, catch Log.Initialize failures (e.g. invalid --log-file path)
+            // so they surface as friendly errors via FailWithError instead of unhandled exceptions.
+            // In debug builds, let exceptions propagate for full stack trace visibility.
+            try
+            {
+#endif
+                Log.Initialize(verbose, logFilePath);
+#if !DEBUG
+            }
+            catch (Exception exc)
+            {
+                return FailWithError(exc.Message);
+            }
+#endif
+
             List<Result> templates = LoadTemplates();
 
             if (args.Length > 0)
@@ -113,21 +141,19 @@ namespace adeleg
             List<Result> results = new List<Result>();
             bool generalize = false;
 
-            bool verbose = false;
-            string logFilePath = null;
+            // Log.Initialize() already called in Main(); just compute startIndex
             int startIndex = 0;
             for (int k = 0; k < args.Length; k++)
             {
                 if (args[k] == "--verbose" || args[k] == "-v")
                 {
-                    verbose = true;
                     startIndex = k + 1;
                 }
                 else if (args[k] == "--log-file")
                 {
                     if (k + 1 >= args.Length)
                         return FailWithError("file path required after --log-file");
-                    logFilePath = args[++k];
+                    ++k;
                     startIndex = k + 1;
                 }
                 else
@@ -135,7 +161,6 @@ namespace adeleg
                     break;
                 }
             }
-            Log.Initialize(verbose, logFilePath);
 
             if (startIndex >= args.Length)
             {
@@ -149,6 +174,7 @@ namespace adeleg
                 if (args[i] == "--help" || args[i] == "-h" || args[i] == "-?")
                 {
                     ShowUsage();
+                    Log.Close();
                     return 1;
                 }
                 else if (args[i] == "--generalize")
@@ -309,6 +335,7 @@ namespace adeleg
             var res = connectform.ShowDialog();
             if (res != DialogResult.OK)
             {
+                Log.Close();
                 Environment.Exit(1);
             }
 
@@ -318,7 +345,7 @@ namespace adeleg
             if (connectform.dataSources.Count > 0)
             {
                 // TODO: multithreading here, with reporting in a GUI status bar
-                Console.WriteLine($" [.] Computing from {connectform.dataSources.Count} data sources...");
+                Log.Info($"Computing from {connectform.dataSources.Count} data sources...");
                 foreach (string partitionDN in engine.ListPartitionDNs())
                 {
                     results.AddRange(engine.Scan(partitionDN, true));
@@ -326,10 +353,11 @@ namespace adeleg
             }
             else
             {
-                Console.WriteLine(" [.] Showing cached results only");
+                Log.Info("Showing cached results only");
             }
 
             Application.Run(new TreeWindow(results, new HashSet<string>(engine.ListPartitionDNs())));
+            Log.Close();
             return 0;
         }
     }

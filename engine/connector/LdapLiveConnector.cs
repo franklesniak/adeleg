@@ -7,6 +7,7 @@ using System.Net;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text.RegularExpressions;
+using adeleg.engine;
 
 namespace adeleg.engine.connector
 {
@@ -20,8 +21,8 @@ namespace adeleg.engine.connector
         public string configurationNC = null;
         public string rootDomainNC = null;
         public string[] partitionDNs = new string[0];
-        public Dictionary<string, SecurityIdentifier> domainSidPerPartitionDn = new Dictionary<string, SecurityIdentifier>();
-        public Dictionary<string, CommonSecurityDescriptor> adminSDHolderPerPartitionDn = new Dictionary<string, CommonSecurityDescriptor>();
+        public Dictionary<string, SecurityIdentifier> domainSidPerPartitionDn = new Dictionary<string, SecurityIdentifier>(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, CommonSecurityDescriptor> adminSDHolderPerPartitionDn = new Dictionary<string, CommonSecurityDescriptor>(StringComparer.OrdinalIgnoreCase);
 
         public LdapLiveConnector(string server, ushort port, NetworkCredential creds = null)
         {
@@ -29,6 +30,7 @@ namespace adeleg.engine.connector
             this.creds = creds;
 
             var srv = new LdapDirectoryIdentifier(server, port, false, false);
+            Log.Info($"Connecting to LDAP server {server}:{port}");
             if (creds == null)
             {
                 this.connection = new LdapConnection(srv);
@@ -42,6 +44,8 @@ namespace adeleg.engine.connector
             this.connection.SessionOptions.Signing = true;
 
             this.connection.Bind();
+            Log.Info($"LDAP Bind() successful to {server}:{port}");
+            Log.Verbose(creds == null ? "Using Windows integrated authentication" : "Using explicit credentials");
 
             this.PrefetchRootDseInformation();
             this.PrefetchDomainSIDs();
@@ -88,23 +92,89 @@ namespace adeleg.engine.connector
         {
             var res = GetLdapRecords(schemaNC, SearchScope.Base,
                          "(objectClass=*)",
-                         new string[] { "schemaNamingContext", "configurationNamingContext", "rootDomainNamingContext", "namingContexts" }).First();
-            this.schemaNC = (string)res.Attributes["schemaNamingContext"].GetValues(typeof(string)).FirstOrDefault();
-            this.configurationNC = (string)res.Attributes["configurationNamingContext"].GetValues(typeof(string)).FirstOrDefault();
-            this.rootDomainNC = (string)res.Attributes["rootDomainNamingContext"].GetValues(typeof(string)).FirstOrDefault();
-            this.partitionDNs = (string[])res.Attributes["namingContexts"].GetValues(typeof(string));
+                         new string[] { "schemaNamingContext", "configurationNamingContext", "rootDomainNamingContext", "namingContexts" }).FirstOrDefault();
+
+            if (res == null)
+            {
+                throw new Exception("RootDSE query did not return any entries. Ensure the domain controller is reachable and returns valid RootDSE information.");
+            }
+
+            var attrs = res.Attributes;
+
+            if (attrs.Contains("schemaNamingContext"))
+            {
+                this.schemaNC = (string)attrs["schemaNamingContext"].GetValues(typeof(string)).FirstOrDefault();
+            }
+            else
+            {
+                throw new Exception("RootDSE did not return 'schemaNamingContext' attribute. Ensure the domain controller is reachable and returns valid RootDSE information.");
+            }
+            if (string.IsNullOrEmpty(this.schemaNC))
+            {
+                throw new Exception("RootDSE returned a null or empty 'schemaNamingContext' value. Ensure the domain controller is reachable and returns valid RootDSE information.");
+            }
+            Log.Verbose($"RootDSE schemaNamingContext = {this.schemaNC}");
+
+            if (attrs.Contains("configurationNamingContext"))
+            {
+                this.configurationNC = (string)attrs["configurationNamingContext"].GetValues(typeof(string)).FirstOrDefault();
+            }
+            else
+            {
+                throw new Exception("RootDSE did not return 'configurationNamingContext' attribute. Ensure the domain controller is reachable and returns valid RootDSE information.");
+            }
+            if (string.IsNullOrEmpty(this.configurationNC))
+            {
+                throw new Exception("RootDSE returned a null or empty 'configurationNamingContext' value. Ensure the domain controller is reachable and returns valid RootDSE information.");
+            }
+            Log.Verbose($"RootDSE configurationNamingContext = {this.configurationNC}");
+
+            if (attrs.Contains("rootDomainNamingContext"))
+            {
+                this.rootDomainNC = (string)attrs["rootDomainNamingContext"].GetValues(typeof(string)).FirstOrDefault();
+            }
+            else
+            {
+                throw new Exception("RootDSE did not return 'rootDomainNamingContext' attribute. Ensure the domain controller is reachable and returns valid RootDSE information.");
+            }
+            if (string.IsNullOrEmpty(this.rootDomainNC))
+            {
+                throw new Exception("RootDSE returned a null or empty 'rootDomainNamingContext' value. Ensure the domain controller is reachable and returns valid RootDSE information.");
+            }
+            Log.Verbose($"RootDSE rootDomainNamingContext = {this.rootDomainNC}");
+
+            if (attrs.Contains("namingContexts"))
+            {
+                this.partitionDNs = (string[])attrs["namingContexts"].GetValues(typeof(string));
+                this.partitionDNs = this.partitionDNs.Where(dn => !string.IsNullOrEmpty(dn)).ToArray();
+            }
+            else
+            {
+                throw new Exception("RootDSE did not return 'namingContexts' attribute. Ensure the domain controller is reachable and returns valid RootDSE information.");
+            }
+            if (this.partitionDNs.Length == 0)
+            {
+                throw new Exception("RootDSE returned no valid 'namingContexts' entries. Ensure the domain controller is reachable and returns valid RootDSE information.");
+            }
+            for (int i = 0; i < this.partitionDNs.Length; i++)
+                Log.Verbose($"RootDSE namingContext[{i}] = {this.partitionDNs[i]}");
         }
 
         private void PrefetchDomainSIDs()
         {
             foreach (string partitionDN in this.partitionDNs)
             {
-                var res = GetLdapRecords(partitionDN, SearchScope.Base, "(objectSid=*)", new string[] { "objectSid" });
-                if (res.Count() > 0)
+                SearchResultEntry entry = GetLdapRecords(partitionDN, SearchScope.Base, "(objectSid=*)", new string[] { "objectSid" }).FirstOrDefault();
+                if (entry != null)
                 {
-                    byte[] sidBytes = (byte[])res.First().Attributes["objectSid"].GetValues(typeof(byte[]))[0];
+                    byte[] sidBytes = (byte[])entry.Attributes["objectSid"].GetValues(typeof(byte[]))[0];
                     SecurityIdentifier sid = new SecurityIdentifier(sidBytes, 0);
                     this.domainSidPerPartitionDn.Add(partitionDN, sid);
+                    Log.Verbose($"Partition {partitionDN} has domain SID {sid}");
+                }
+                else
+                {
+                    Log.Verbose($"Partition {partitionDN} has no objectSid (not a domain partition)");
                 }
             }
         }
@@ -117,6 +187,7 @@ namespace adeleg.engine.connector
                 byte[] bytes = (byte[])res.Attributes["ntSecurityDescriptor"].GetValues(typeof(byte[]))[0];
                 CommonSecurityDescriptor sd = new CommonSecurityDescriptor(true, true, bytes, 0);
                 this.adminSDHolderPerPartitionDn.Add(partitionDN, sd);
+                Log.Verbose($"Retrieved AdminSDHolder security descriptor for {partitionDN}");
             }
         }
 
@@ -283,10 +354,12 @@ namespace adeleg.engine.connector
             {
                 var ctx = new DirectoryContext(DirectoryContextType.Domain);
                 var dc = DomainController.FindOne(ctx, LocatorOptions.ForceRediscovery | LocatorOptions.WriteableRequired);
+                Log.Info($"Auto-located domain controller: {dc.Name}");
                 return dc.Name;
             }
             catch (Exception)
             {
+                Log.Warn("Failed to auto-locate a domain controller via DC Locator");
                 return null;
             }
         }
@@ -328,38 +401,57 @@ namespace adeleg.engine.connector
         internal static void CrawlDomainsAcrossTrusts(List<IConnector> dataSources, bool includeDomainsOutsideForest)
         {
             // Enumerate all DNS domains we already have
-            Dictionary<string, LdapLiveConnector> dnsDomainsCovered = new Dictionary<string, LdapLiveConnector>();
+            Dictionary<string, LdapLiveConnector> dnsDomainsCovered = new Dictionary<string, LdapLiveConnector>(StringComparer.OrdinalIgnoreCase);
             foreach (LdapLiveConnector conn in dataSources.Cast<LdapLiveConnector>())
             {
                 foreach (string partitionDN in conn.GetPartitionDNs())
                 {
-                    string dnsName = partitionDN.Replace(",", ".").Replace("DC=", "").ToLower();
+                    string dnsName = partitionDN.Replace(",", ".").Replace("DC=", "");
                     dnsDomainsCovered[dnsName] = conn;
                 }
             }
 
-            // Now, for each domain partition, enumerate trusts and crawl domains not already covered
-            foreach (LdapLiveConnector dataSource in dataSources.Cast<LdapLiveConnector>())
+            // Now, for each domain partition, enumerate trusts and crawl domains not already covered.
+            // Use a for loop with index because new connectors may be added during iteration.
+            for (int idx = 0; idx < dataSources.Count; idx++)
             {
+                LdapLiveConnector dataSource = (LdapLiveConnector)dataSources[idx];
                 foreach (string partitionDN in dataSource.GetPartitionDNs())
                 {
-                    var trusts = dataSource.GetLdapRecords("CN=System" + partitionDN, SearchScope.Subtree, "(trustPartner=*)", new string[] { "trustPartner", "trustType" });
+                    // Skip non-domain partitions (schema, config, DNS app partitions) since
+                    // trust objects only exist under CN=System in domain partitions.
+                    if (partitionDN.Equals(dataSource.GetSchemaNC(), StringComparison.OrdinalIgnoreCase) ||
+                        partitionDN.Equals(dataSource.GetConfigurationNC(), StringComparison.OrdinalIgnoreCase) ||
+                        partitionDN.StartsWith("DC=DomainDnsZones,", StringComparison.OrdinalIgnoreCase) ||
+                        partitionDN.StartsWith("DC=ForestDnsZones,", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Log.Verbose($"Skipping non-domain partition {partitionDN} for trust enumeration");
+                        continue;
+                    }
+                    var trusts = dataSource.GetLdapRecords("CN=System," + partitionDN, SearchScope.Subtree, "(trustPartner=*)", new string[] { "trustPartner", "trustType" });
                     foreach (SearchResultEntry trust in trusts)
                     {
                         string partner = (string)trust.Attributes["trustPartner"].GetValues(typeof(string)).FirstOrDefault();
                         TrustType type = (TrustType)Enum.Parse(typeof(TrustType), (string)trust.Attributes["trustType"].GetValues(typeof(string)).FirstOrDefault());
 
-                        if (includeDomainsOutsideForest && (type == TrustType.External || type == TrustType.Forest || type == TrustType.Kerberos))
+                        Log.Info($"Discovered trust partner: {partner} (type: {type})");
+
+                        if (!includeDomainsOutsideForest && (type == TrustType.External || type == TrustType.Forest || type == TrustType.Kerberos))
                         {
+                            Log.Verbose($"Skipping trust partner {partner} (external/forest trust, not crawling outside forest)");
                             continue;
                         }
-                        if (dnsDomainsCovered.ContainsKey(partner.ToLower()))
+                        if (dnsDomainsCovered.ContainsKey(partner))
                         {
+                            Log.Verbose($"Skipping trust partner {partner} (already covered)");
                             continue;
                         }
                         var ctx2 = new DirectoryContext(DirectoryContextType.Domain, partner);
                         var dc = DomainController.FindOne(ctx2, LocatorOptions.ForceRediscovery | LocatorOptions.WriteableRequired);
-                        dataSources.Add(new LdapLiveConnector(dc.IPAddress, 389, dataSource.creds)); // reuse same credentials as the trust party we already have
+                        Log.Info($"Connecting to trust partner {partner} via DC {dc.IPAddress}");
+                        var newConnector = new LdapLiveConnector(dc.IPAddress, 389, dataSource.creds); // reuse same credentials as the trust party we already have
+                        dataSources.Add(newConnector);
+                        dnsDomainsCovered[partner] = newConnector;
                     }
                 }
             }

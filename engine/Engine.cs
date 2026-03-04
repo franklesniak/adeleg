@@ -71,9 +71,9 @@ namespace adeleg.engine
             "{domainSid}-521", // Read-Only Domain Controllers
         };
         private List<Result> templates;
-        private Dictionary<string, IConnector> dataSourcePerNamingContext = new Dictionary<string, IConnector>();
-        private Dictionary<string, string> forestRootPerNamingContext = new Dictionary<string, string>();
-        private Dictionary<string, ForestMetadata> metadataPerForest = new Dictionary<string, ForestMetadata>();
+        private Dictionary<string, IConnector> dataSourcePerNamingContext = new Dictionary<string, IConnector>(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, string> forestRootPerNamingContext = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, ForestMetadata> metadataPerForest = new Dictionary<string, ForestMetadata>(StringComparer.OrdinalIgnoreCase);
 
         public Engine(IEnumerable<IConnector> dataSources, List<Result> templates)
         {
@@ -87,12 +87,23 @@ namespace adeleg.engine
                     // If two sources provide the same partition, only one is kept (random)
                     dataSourcePerNamingContext[partitionDN] = dataSource;
                     forestRootPerNamingContext[partitionDN] = forestDN;
+                    Log.Info($"Registering partition '{partitionDN}' with forest root '{forestDN}'");
                 }
             }
-            foreach (string forestDN in forestRootPerNamingContext.Values)
+            foreach (string forestDN in forestRootPerNamingContext.Values.Distinct(StringComparer.OrdinalIgnoreCase))
             {
+                if (string.IsNullOrEmpty(forestDN))
+                {
+                    Log.Error("A data source returned a null or empty rootDomainNamingContext. This usually means the domain controller's RootDSE did not include the rootDomainNamingContext attribute.");
+                    throw new Exception("A data source returned a null or empty forest root DN (rootDomainNamingContext). Ensure the domain controller is reachable and returns valid RootDSE information.");
+                }
                 if (!dataSourcePerNamingContext.ContainsKey(forestDN))
                 {
+                    Log.Error($"Forest root DN '{forestDN}' is not among the registered partition DNs");
+                    Log.Error("Registered partition DNs:");
+                    foreach (string key in dataSourcePerNamingContext.Keys)
+                        Log.Error($"  - {key}");
+                    Log.Error("This typically occurs when connecting to a child domain DC in a multi-domain forest. The child DC's RootDSE reports the forest root as rootDomainNamingContext, but the forest root's naming context is not among the namingContexts hosted by this DC.");
                     throw new Exception($"Root domain {forestDN} needs to be included in data inputs to be scanned");
                 }
             }
@@ -125,7 +136,7 @@ namespace adeleg.engine
                     Tuple<ObjectClass, string, string> resolved = this.ResolveFromSid(forest.Key, sid);
                     if (resolved == null || (resolved.Item2 == null && resolved.Item3 == null))
                     {
-                        Console.WriteLine($" [!] Warning: unable to resolve {sid} in {forest.Key}");
+                        Log.Warn($"Unable to resolve {sid} in {forest.Key}");
                         continue;
                     }
 
@@ -136,7 +147,7 @@ namespace adeleg.engine
                             SecurityIdentifier memberSid = ResolveDnToSid(memberDN);
                             if (memberSid == null)
                             {
-                                Console.WriteLine($" [!] Warning: unable to resolve {memberDN} to a SID");
+                                Log.Warn($"Unable to resolve {memberDN} to a SID");
                                 continue;
                             }
 
@@ -149,7 +160,9 @@ namespace adeleg.engine
 
         private ForestMetadata ScanForestMetadata(string forestDN, IConnector rootDomainDataSource)
         {
+            Log.Info($"Scanning forest metadata for '{forestDN}'");
             SecurityIdentifier forestSid = rootDomainDataSource.GetDomainSidByPartitionDN(forestDN);
+            Log.Verbose($"Forest SID for '{forestDN}' = {forestSid}");
 
             ForestMetadata res = new ForestMetadata
             {
@@ -157,12 +170,12 @@ namespace adeleg.engine
                 schemaAdminSid = new SecurityIdentifier($"{forestSid}-518"),
                 schemaNC = rootDomainDataSource.GetSchemaNC(),
 
-                domainSidPerPartition = new Dictionary<string, SecurityIdentifier>(),
-                domainAdminsSidPerPartition = new Dictionary<string, SecurityIdentifier>(),
-                sidResolutionCachePerPartition = new Dictionary<string, Dictionary<SecurityIdentifier, Tuple<ObjectClass, string, string>>>(),
-                defaultSdPerPartitionPerClassName = new Dictionary<string, Dictionary<string, CommonSecurityDescriptor>>(),
-                adminSdHolderSdPerPartition = new Dictionary<string, CommonSecurityDescriptor>(),
-                adminSdHolderProtectedDn = new HashSet<string>(),
+                domainSidPerPartition = new Dictionary<string, SecurityIdentifier>(StringComparer.OrdinalIgnoreCase),
+                domainAdminsSidPerPartition = new Dictionary<string, SecurityIdentifier>(StringComparer.OrdinalIgnoreCase),
+                sidResolutionCachePerPartition = new Dictionary<string, Dictionary<SecurityIdentifier, Tuple<ObjectClass, string, string>>>(StringComparer.OrdinalIgnoreCase),
+                defaultSdPerPartitionPerClassName = new Dictionary<string, Dictionary<string, CommonSecurityDescriptor>>(StringComparer.OrdinalIgnoreCase),
+                adminSdHolderSdPerPartition = new Dictionary<string, CommonSecurityDescriptor>(StringComparer.OrdinalIgnoreCase),
+                adminSdHolderProtectedDn = new HashSet<string>(StringComparer.OrdinalIgnoreCase),
                 tier0Sids = new HashSet<SecurityIdentifier>(),
 
                 // Inventory schema classes so we can display pretty names
