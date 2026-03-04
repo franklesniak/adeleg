@@ -170,12 +170,12 @@ namespace adeleg.engine
                 schemaAdminSid = new SecurityIdentifier($"{forestSid}-518"),
                 schemaNC = rootDomainDataSource.GetSchemaNC(),
 
-                domainSidPerPartition = new Dictionary<string, SecurityIdentifier>(),
-                domainAdminsSidPerPartition = new Dictionary<string, SecurityIdentifier>(),
-                sidResolutionCachePerPartition = new Dictionary<string, Dictionary<SecurityIdentifier, Tuple<ObjectClass, string, string>>>(),
-                defaultSdPerPartitionPerClassName = new Dictionary<string, Dictionary<string, CommonSecurityDescriptor>>(),
-                adminSdHolderSdPerPartition = new Dictionary<string, CommonSecurityDescriptor>(),
-                adminSdHolderProtectedDn = new HashSet<string>(),
+                domainSidPerPartition = new Dictionary<string, SecurityIdentifier>(StringComparer.OrdinalIgnoreCase),
+                domainAdminsSidPerPartition = new Dictionary<string, SecurityIdentifier>(StringComparer.OrdinalIgnoreCase),
+                sidResolutionCachePerPartition = new Dictionary<string, Dictionary<SecurityIdentifier, Tuple<ObjectClass, string, string>>>(StringComparer.OrdinalIgnoreCase),
+                defaultSdPerPartitionPerClassName = new Dictionary<string, Dictionary<string, CommonSecurityDescriptor>>(StringComparer.OrdinalIgnoreCase),
+                adminSdHolderSdPerPartition = new Dictionary<string, CommonSecurityDescriptor>(StringComparer.OrdinalIgnoreCase),
+                adminSdHolderProtectedDn = new HashSet<string>(StringComparer.OrdinalIgnoreCase),
                 tier0Sids = new HashSet<SecurityIdentifier>(),
 
                 // Inventory schema classes so we can display pretty names

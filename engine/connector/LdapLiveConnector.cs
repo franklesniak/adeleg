@@ -21,8 +21,8 @@ namespace adeleg.engine.connector
         public string configurationNC = null;
         public string rootDomainNC = null;
         public string[] partitionDNs = new string[0];
-        public Dictionary<string, SecurityIdentifier> domainSidPerPartitionDn = new Dictionary<string, SecurityIdentifier>();
-        public Dictionary<string, CommonSecurityDescriptor> adminSDHolderPerPartitionDn = new Dictionary<string, CommonSecurityDescriptor>();
+        public Dictionary<string, SecurityIdentifier> domainSidPerPartitionDn = new Dictionary<string, SecurityIdentifier>(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, CommonSecurityDescriptor> adminSDHolderPerPartitionDn = new Dictionary<string, CommonSecurityDescriptor>(StringComparer.OrdinalIgnoreCase);
 
         public LdapLiveConnector(string server, ushort port, NetworkCredential creds = null)
         {
