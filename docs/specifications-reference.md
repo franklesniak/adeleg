@@ -310,7 +310,7 @@ The `Engine::describe_ace()` method maps individual bits in the 32-bit access ma
 
 | Access Right Constant | Bit Value | Human-Readable Description |
 |---|---|---|
-| `ADS_RIGHT_DS_WRITE_PROP` | `0x20` | "Write attribute {name}" or "Write all properties" |
+| `ADS_RIGHT_DS_WRITE_PROP` | `0x20` | "Write attribute {name}" (attribute GUID match), "Write attributes of category {name}" (property set GUID match), or "Write all properties" (no match/no GUID) |
 | `ADS_RIGHT_DS_CONTROL_ACCESS` | `0x100` | "{Control access name}" or "Perform all application-specific operations" |
 | `ADS_RIGHT_DS_CREATE_CHILD` | `0x1` | "Create child {class} objects" or "Create child objects of any type" |
 | `ADS_RIGHT_DS_DELETE_CHILD` | `0x2` | "Delete child {class} objects" or "Delete child objects of any type" |
@@ -448,14 +448,14 @@ The CSV output has **5 columns**, written using the `csv` crate (version 1.1.6):
 
 For each `(location, result)` pair in the scan results:
 
-1. **Unreadable security descriptors** (if `--show-warning-unreadable`): One `Warning` record with the error message.
+1. **Per-location processing errors** (if `--show-warning-unreadable`): One `Warning` record with the error message. This covers any `Err` entry in the results map, including unreadable security descriptors, missing/unreadable `objectClass` attributes, and unparseable schema `defaultSecurityDescriptor` SDDL strings.
 2. **Owner**: One `Owner` record if the object's owner is not in the ignored trustee set and was not filtered by CREATE_CHILD analysis.
 3. **DACL protection**: One `Warning` record if the DACL has the `SE_DACL_PROTECTED` flag set and the object is not in an excluded category.
 4. **Non-canonical ACL**: One `Warning` record if the ACL is not in canonical order (deny before allow, or explicit after inherited). The offending ACE is described.
 5. **Deleted trustees**: One `Warning` record per ACE whose trustee no longer exists.
 6. **Orphan ACEs**: One `Allow ACE` or `Deny ACE` record per unmatched ACE, with the access rights described.
 7. **Delegations**: For each matched delegation (built-in only if `--show-builtin`):
-   - One `Built-in` or `Delegation` record with the delegation name/description
+   - One `Built-in` or `Delegation` record whose Details field is the output of `describe_delegation_rights()`: either the template name (for `TemplateName`/`Template` variants) or an `"Allow/Deny {describe_ace(...)}"` string (for individual `Ace` variants)
    - One `Expected allow/deny ACE found` record per matched ACE
    - One `Expected allow/deny ACE missing` record per unmatched expected ACE
 
