@@ -298,7 +298,7 @@ Each resolved SID is also mapped to a `PrincipalType` enum. The mapping depends 
 ### Unresolved and Orphaned SIDs
 
 - If resolution fails entirely (no cache hit, `LookupAccountSidLocalW` fails, and LDAP lookup fails), `resolve_sid()` returns `None`. In CSV output, the raw SID string (e.g., `S-1-5-21-...`) is used as the trustee name, with type `External`.
-- ACEs whose trustee SID belongs to a domain in the forest but cannot be resolved are moved from the "orphan ACEs" list to the "deleted trustee" list, indicating the principal no longer exists.
+- During post-processing, for each naming context, ACEs whose trustee SID shares a prefix with the naming context's associated domain SID (or the root domain SID for non-domain naming contexts like schema/configuration) and cannot be resolved are moved from the "orphan ACEs" list to the "deleted trustee" list. This means unresolvable SIDs from other domains remain as orphan ACEs with raw SID trustee strings.
 
 ---
 
@@ -392,7 +392,7 @@ The pipeline from directory query to CSV output follows these steps:
 
 ### Step 6: Post-Processing
 1. **Memory optimization**: Remove records with no findings (no orphan ACEs, no owner issues, no warnings), but retain parent container records needed for CREATE_CHILD analysis
-2. **Deleted trustee detection**: For each domain, check if orphan ACE trustees with domain-specific SIDs can be resolved; if not, move them to `deleted_trustee`
+2. **Deleted trustee detection**: For each naming context, determine the associated domain SID (or the root domain SID for non-domain naming contexts such as schema/configuration). Check if orphan ACE trustees whose SIDs share a prefix with that domain SID (via `shares_prefix_with(domain_sid.with_rid(0))`) can be resolved; if not, move them to `deleted_trustee`
 3. **KDS root key handling**: Suppress DACL protection warnings for KDS root key objects in the Configuration partition
 4. **Owner analysis via CREATE_CHILD**: For each object with a non-ignored owner, walk up the container hierarchy checking if the owner has CREATE_CHILD permissions — if so, suppress the owner finding (the owner created the object)
 5. **Parent object ACE suppression**: Remove ACEs whose trustees are parent objects (e.g., computers controlling their own BitLocker recovery objects)
@@ -499,7 +499,7 @@ The tool does not distinguish between OUs, containers, and other objects at the 
 ### Deleted Objects and Tombstones
 
 - The tool does not explicitly query the Deleted Objects container or tombstones.
-- ACEs referencing SIDs from the local forest that cannot be resolved are flagged as `deleted_trustee` and reported with a "Warning" category in the CSV, noting that the trustee no longer exists and should be cleaned up.
+- ACEs referencing SIDs that share a prefix with the current naming context's associated domain SID (or root domain SID for non-domain naming contexts) and cannot be resolved are flagged as `deleted_trustee` and reported with a "Warning" category in the CSV, noting that the trustee no longer exists and should be cleaned up. Unresolvable SIDs from other domains or forests remain as orphan ACEs with raw SID trustee strings.
 
 ### Foreign Security Principals
 
@@ -523,7 +523,7 @@ A non-canonical ACL is detected when:
 
 ### Callback and Audit ACE Types
 
-The `authz` crate parses callback ACE types (`ACCESS_ALLOWED_CALLBACK_ACE_TYPE`, etc.) and audit ACE types. However, the engine's `is_ace_interesting()` and `grants_access()` methods treat callback ACEs the same as their non-callback counterparts. Audit and mandatory label ACEs are parsed but do not grant access and are effectively ignored by the delegation analysis.
+The `authz` crate parses callback ACE types (`ACCESS_ALLOWED_CALLBACK_ACE_TYPE`, etc.) and audit ACE types. However, the engine's `is_ace_interesting()` and `grants_access()` methods treat callback ACEs the same as their non-callback counterparts. Audit and mandatory label ACEs are parsed and `grants_access()` returns `false` for them. Note that `is_ace_interesting()` does not explicitly filter them out by ACE type; if such ACEs appeared in a DACL with non-read access rights, they would pass the `is_ace_interesting()` filter and could trigger non-canonical ACL warnings (since `grants_access()` returns `false`, the canonicality check treats them like deny ACEs). In practice, audit/mandatory label ACEs do not normally appear in DACLs.
 
 ---
 
