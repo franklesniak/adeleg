@@ -67,7 +67,8 @@ The `LdapSearch` struct (`winldap/src/search.rs`) implements the `Iterator` trai
 | Control access rights | `(&(objectClass=controlAccessRight)(validAccesses=256)(rightsGuid=*))` | `rightsGuid`, `displayName` |
 | All naming contexts (main scan) | `(objectClass=*)` | `nTSecurityDescriptor`, `objectClass`, `objectSID`, `adminCount`, `msDS-KrbTgtLinkBl`, `serverReference` |
 | AdminSDHolder | `(objectClass=*)` | `nTSecurityDescriptor` |
-| Domain enumeration | `(&(nCName=*)(nETBIOSName=*))` | `nCName`, `nETBIOSName` |
+| Domain enumeration (partitions) | `(&(nCName=*)(nETBIOSName=*))` | `nCName`, `nETBIOSName` |
+| Domain enumeration (SID) | `(objectSid=*)` | `objectSid` |
 
 ### LDAP Referral Handling
 
@@ -456,8 +457,8 @@ For each `(location, result)` pair in the scan results:
 6. **Orphan ACEs**: One `Allow ACE` or `Deny ACE` record per unmatched ACE, with the access rights described.
 7. **Delegations**: For each matched delegation (built-in only if `--show-builtin`):
    - One `Built-in` or `Delegation` record whose Details field is the output of `describe_delegation_rights()`: either the template name (for `TemplateName`/`Template` variants) or an `"Allow/Deny {describe_ace(...)}"` string (for individual `Ace` variants)
-   - One `Expected allow/deny ACE found` record per matched ACE
-   - One `Expected allow/deny ACE missing` record per unmatched expected ACE
+   - One `Expected allow/deny ACE found` record per matched ACE, with Details field `"In delegation: {describe_delegation_rights()}"` (prefixed with "In delegation: ")
+   - One `Expected allow/deny ACE missing` record per unmatched expected ACE, with Details field `"In delegation: {describe_delegation_rights()}"` (prefixed with "In delegation: ")
 
 ### Formatting and Encoding
 
