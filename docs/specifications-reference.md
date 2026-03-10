@@ -14,7 +14,7 @@ ADeleg queries the following Active Directory partitions, discovered dynamically
 |---|---|---|
 | Schema | `schemaNamingContext` | Retrieve class definitions, attribute definitions, default security descriptors |
 | Configuration | `configurationNamingContext` | Retrieve extended rights, control access rights, validated writes, property sets |
-| All domain naming contexts | `namingContexts` | Scan every object for explicit (non-inherited) ACEs |
+| All naming contexts | `namingContexts` | Scan every object in each naming context (including schema, configuration, domain, and application partitions) for explicit (non-inherited) ACEs |
 | Root domain | `rootDomainNamingContext` | Used as a fallback domain reference |
 
 ### RootDSE Bootstrap
@@ -33,7 +33,7 @@ These values are stored in the `LdapConnection` struct (`winldap/src/connection.
 
 - **Schema partition**: queried with `LDAP_SCOPE_SUBTREE` to enumerate all `classSchema` objects (for class GUIDs and default security descriptors) and all `attributeSchema` objects (for attribute GUIDs).
 - **Configuration partition**: queried with `LDAP_SCOPE_SUBTREE` to enumerate `controlAccessRight` objects for property sets, validated writes, and control access rights.
-- **Each domain naming context**: queried with `LDAP_SCOPE_SUBTREE` using the filter `(objectClass=*)`, which returns every object in the partition recursively.
+- **Each naming context** (including schema, configuration, domain, and application partitions): queried with `LDAP_SCOPE_SUBTREE` using the filter `(objectClass=*)`, which returns every object in the partition recursively.
 - **AdminSDHolder**: queried with `LDAP_SCOPE_BASE` at `CN=AdminSDHolder,CN=System,<domain DN>`.
 - **Individual SID lookups**: queried with `LDAP_SCOPE_BASE` using synthetic DNs like `<SID=S-1-5-...>`.
 
@@ -255,7 +255,7 @@ The file `builtin_delegations.json` (embedded at compile time) defines expected 
 
 The tool suppresses several ACE patterns specific to Read-Only Domain Controllers (RODCs):
 - Change Password / Reset Password control access by an RODC on its secondary KrbTgt account
-- CREATE_CHILD / DELETE on `nTDSDSA` objects by the RODC referenced from the server object
+- CREATE_CHILD on `nTDSDSA` objects by the RODC referenced from the server object, and DELETE on `nTDSDSA` objects only when the ACE has the `inherit_only` flag set
 - WRITE_PROP for `schedule` and `fromServer` attributes on `nTDSConnection` objects by the owning RODC
 - Validated write for `dnsHostName` on `server` objects by the referenced RODC
 
