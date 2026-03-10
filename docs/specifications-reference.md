@@ -65,7 +65,7 @@ The `LdapSearch` struct (`winldap/src/search.rs`) implements the `Iterator` trai
 | Property sets | `(&(objectClass=controlAccessRight)(validAccesses=48)(rightsGuid=*))` | `rightsGuid`, `displayName` |
 | Validated writes | `(&(objectClass=controlAccessRight)(validAccesses=8)(rightsGuid=*))` | `rightsGuid`, `displayName` |
 | Control access rights | `(&(objectClass=controlAccessRight)(validAccesses=256)(rightsGuid=*))` | `rightsGuid`, `displayName` |
-| Domain partitions (main scan) | `(objectClass=*)` | `nTSecurityDescriptor`, `objectClass`, `objectSID`, `adminCount`, `msDS-KrbTgtLinkBl`, `serverReference` |
+| All naming contexts (main scan) | `(objectClass=*)` | `nTSecurityDescriptor`, `objectClass`, `objectSID`, `adminCount`, `msDS-KrbTgtLinkBl`, `serverReference` |
 | AdminSDHolder | `(objectClass=*)` | `nTSecurityDescriptor` |
 | Domain enumeration | `(&(nCName=*)(nETBIOSName=*))` | `nCName`, `nETBIOSName` |
 
@@ -473,7 +473,7 @@ For each `(location, result)` pair in the scan results:
 ### Resource Representation
 
 Resources in the CSV `Resource` column are represented as:
-- **Distinguished Names (DNs)**: Full LDAP DNs like `CN=Users,DC=example,DC=com` for objects within domain partitions or the configuration partition.
+- **Distinguished Names (DNs)**: Full LDAP DNs like `CN=Users,DC=example,DC=com` for objects within any naming context (domain, configuration, schema, or application partitions).
 - **Schema references**: Formatted as `Schema: default security descriptor of class '{className}'` for default security descriptors in the schema.
 - **`Global`**: Used for non-location-specific findings.
 
@@ -569,13 +569,20 @@ The `authz` crate parses callback ACE types (`ACCESS_ALLOWED_CALLBACK_ACE_TYPE`,
 - Invalid SDDL strings in schema `defaultSecurityDescriptor` attributes produce `AdelegError::UnableToParseDefaultSecurityDescriptor` errors.
 - If an object's `objectClass` attribute is missing or unreadable, the error is recorded for that object (as `Err(AdelegError::LdapQueryFailed(...))`) and scanning continues. However, if the attribute is present but its value list is empty, the code panics via `.pop().expect("assertion failed: object with an empty objectClass!?")`, as this is considered an impossible condition in a valid Active Directory.
 
-### Unreadable Security Descriptors
+### Per-Location Processing Errors
 
-By default, unreadable security descriptors are silently counted and a summary message is printed to stderr (where `{count}` is replaced at runtime with the actual number of unreadable descriptors):
+The error counter (displayed as `warning_unreadable_count` in the code) tracks all per-location `Err` entries in the results map, not just unreadable security descriptors. This includes:
+- Unreadable security descriptors (failed `nTSecurityDescriptor` attribute reads)
+- Missing or unreadable `objectClass` attributes (`AdelegError::LdapQueryFailed`)
+- Unparseable schema `defaultSecurityDescriptor` SDDL strings (`AdelegError::UnableToParseDefaultSecurityDescriptor`)
+
+By default, these errors are silently counted and a summary message is printed to stderr:
 ```
 [!] {count} security descriptors could not be read, use --show-warning-unreadable to see where
 ```
-With `--show-warning-unreadable`, each unreadable descriptor generates a CSV record with category `Warning`.
+(Note: the message text says "security descriptors" but the count includes all per-location processing errors listed above.)
+
+With `--show-warning-unreadable`, each error generates a CSV record with category `Warning`.
 
 ### JSON Parsing Errors
 
