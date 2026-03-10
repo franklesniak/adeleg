@@ -182,7 +182,7 @@ if default_aces.iter().any(|default_ace| ace_equivalent(default_ace, ace)) {
 
 The `ace_equivalent()` function compares two ACEs while ignoring:
 - **Read-only access rights** (`IGNORED_ACCESS_RIGHTS`): `ADS_RIGHT_READ_CONTROL`, `ADS_RIGHT_ACTRL_DS_LIST`, `ADS_RIGHT_DS_LIST_OBJECT`, `ADS_RIGHT_DS_READ_PROP`
-- **Object inherit flag** (`IGNORED_ACE_FLAGS`): `OBJECT_INHERIT_ACE`, since there are no "objects" in AD (only containers)
+- **Object inherit flag** (`IGNORED_ACE_FLAGS`): `OBJECT_INHERIT_ACE`. The source code comment states "there is no 'object' in Active Directory, only containers"; in practice this flag is simply masked out during ACE comparison so that two ACEs differing only in this flag are treated as equivalent
 
 ### Creator Owner Handling in Schema Defaults
 
@@ -231,7 +231,7 @@ Deny ACEs for `Everyone` that deny the `Change Password` control access right ar
 
 ### AdminSDHolder ACEs
 
-For objects with `adminCount=1`, ACEs that appear in the AdminSDHolder DACL are suppressed. This is because the SDProp process copies the AdminSDHolder's DACL onto protected objects.
+For objects with a non-zero `adminCount` (the code checks `adminCount != "0"`, defaulting to `"0"` if the attribute is missing or unreadable), ACEs that appear in the AdminSDHolder DACL are suppressed. This is because the SDProp process copies the AdminSDHolder's DACL onto protected objects.
 
 ### Ignored Control Access Rights
 
@@ -267,24 +267,33 @@ The tool suppresses several ACE patterns specific to Read-Only Domain Controller
 
 SID resolution is performed by `Engine::resolve_sid()` in `engine.rs` using a multi-step approach:
 
-1. **Cache lookup**: Check `resolved_sid_to_dn` (a `RefCell<HashMap<Sid, String>>`) for a previously resolved name.
-2. **Local well-known SID resolution**: Call `LookupAccountSidLocalW` (loaded dynamically from `sechost.dll` via `GetProcAddress`) to resolve well-known SIDs to `DOMAIN\Username` format.
-3. **LDAP SID-based lookup**: Perform a base-scoped LDAP search using the synthetic DN `<SID=S-1-5-...>` and retrieve the `objectClass` attribute to determine the principal type.
+1. **Cache lookup**: Check `resolved_sid_to_dn` (a `RefCell<HashMap<Sid, String>>`) for a previously resolved display name. Despite its field name, this cache stores either a distinguished name (DN) **or** a locally-resolved `DOMAIN\Username` string, depending on which resolution path populated it.
+2. **Local well-known SID resolution**: Call `LookupAccountSidLocalW` (loaded dynamically from `sechost.dll` via `GetProcAddress`) to resolve well-known SIDs to `DOMAIN\Username` format. If successful, the resulting `DOMAIN\Username` string is stored in `resolved_sid_to_dn`, and the `SID_NAME_USE` value returned by the API is used to determine the `PrincipalType`.
+3. **LDAP SID-based lookup**: Perform a base-scoped LDAP search using the synthetic DN `<SID=S-1-5-...>` and retrieve the `objectClass` attribute to determine the principal type. If successful, the object's DN is stored in `resolved_sid_to_dn`.
 
 ### Cache Population
 
-The SID-to-DN cache is populated during the main scan:
-- When an object has an `objectSid` attribute, the mapping from SID → DN is stored.
-- For domain-specific SIDs, the mapping is always stored.
+The SID-to-display-name cache (`resolved_sid_to_dn`) is populated from multiple sources during the tool's operation:
+- **During the main scan**: When an object has an `objectSid` attribute, the mapping from SID → DN is stored.
+- **During local resolution**: When `LookupAccountSidLocalW` succeeds, the mapping from SID → `DOMAIN\Username` is stored.
+- **During LDAP SID lookup**: When a `<SID=...>` LDAP search succeeds, the mapping from SID → DN is stored.
+- For domain-specific SIDs, the mapping is always stored during the main scan.
 - For well-known SIDs (e.g., those in `CN=ForeignSecurityPrincipals`), the tool first attempts `LookupAccountSidLocalW` and only falls back to the DN if that fails.
 
 ### Principal Type Resolution
 
-Each resolved SID is also mapped to a `PrincipalType` enum:
-- `User` — `objectClass` ends with `user`
-- `Group` — `objectClass` ends with `group`
-- `Computer` — `objectClass` ends with `computer`
-- `External` — all other cases, including unresolvable SIDs
+Each resolved SID is also mapped to a `PrincipalType` enum. The mapping depends on the resolution path:
+
+- **From LDAP (objectClass-based)**: The most specific class (last value of the multi-valued `objectClass` attribute) is compared via case-insensitive exact match:
+  - `Computer` — most specific class is exactly `"computer"`
+  - `User` — most specific class is exactly `"user"`
+  - `Group` — most specific class is exactly `"group"`
+  - `External` — any other class name
+- **From local resolution (`LookupAccountSidLocalW`)**: The `SID_NAME_USE` value returned by the API is mapped:
+  - `SidTypeUser` → `User`
+  - `SidTypeGroup` → `Group`
+  - `SidTypeComputer` → `Computer`
+  - All other values → `External`
 
 ### Unresolved and Orphaned SIDs
 
@@ -314,12 +323,22 @@ The `Engine::describe_ace()` method maps individual bits in the 32-bit access ma
 
 ### Object Type GUID Resolution
 
-When an ACE has an `object_type` GUID, it is resolved in the following order:
-1. Attribute GUID → attribute name (from `schema.attribute_guids`)
-2. Property set GUID → property set name (from `schema.property_set_names`)
+In **resolved-name mode** (the default), the `object_type` GUID is not resolved through a single global lookup order. Instead, the resolution is **conditional on which access right bit is set** in the access mask. Each access right checks only the schema categories relevant to it:
+
+| Access Right | GUID Resolution Order |
+|---|---|
+| `WRITE_PROP` | attribute GUID → property set GUID → (fallback: "Write all properties") |
+| `CONTROL_ACCESS` | control access right GUID → (fallback: "Perform all application-specific operations") |
+| `CREATE_CHILD` | class GUID → (fallback: "Create child objects of any type") |
+| `DELETE_CHILD` | class GUID → (fallback: "Delete child objects of any type") |
+| `DS_SELF` | validated write GUID → (fallback: "Perform all validated writes") |
+
+In **raw mode** (`--show-raw`), the GUID is resolved through a single sequential lookup across all schema categories in this order:
+1. Class GUID → class name (from `schema.class_guids`)
+2. Attribute GUID → attribute name (from `schema.attribute_guids`)
 3. Control access right GUID → control access name (from `schema.control_access_names`)
-4. Validated write GUID → validated write name (from `schema.validated_write_names`)
-5. Class GUID → class name (from `schema.class_guids`)
+4. Property set GUID → property set name (from `schema.property_set_names`)
+5. Validated write GUID → validated write name (from `schema.validated_write_names`)
 
 ### Inherited Object Type Resolution
 
@@ -445,7 +464,7 @@ For each `(location, result)` pair in the scan results:
 - The CSV is written using the Rust `csv` crate, which produces RFC 4180-compliant output.
 - Fields containing commas, quotes, or newlines are automatically quoted.
 - Encoding is UTF-8.
-- There is no explicit row ordering within the CSV beyond the iteration order of the internal `HashMap<DelegationLocation, ...>`, which is non-deterministic. Schema ACEs appear before domain partition ACEs since schema results are processed first.
+- There is no explicit row ordering within the CSV beyond the iteration order of the internal `HashMap<DelegationLocation, ...>`, which is non-deterministic. The order of records across different runs is not guaranteed.
 
 ---
 
@@ -540,14 +559,15 @@ The `authz` crate parses callback ACE types (`ACCESS_ALLOWED_CALLBACK_ACE_TYPE`,
 ### LDAP Errors
 
 - If the LDAP connection fails (`ldap_connect`, `ldap_bind_sW`), the tool prints an error message and exits with code 1.
-- If a search fails, the `LdapSearch` iterator returns `Err(LdapError)`, and the tool propagates the error. For the main scan, a search failure on a single object results in an error entry (`Err(AdelegError::LdapQueryFailed(...))`) for that object's location, but scanning continues for other objects.
-- Parse failures for security descriptors result in `Err` entries in the result map; the CSV reports these as `Warning` records if `--show-warning-unreadable` is enabled.
+- If the LDAP search itself fails (e.g., the server rejects the query or connection drops), the `LdapSearch` iterator returns `Err(LdapError)`. In `get_explicit_aces()`, search-level errors are propagated via `entry?`, which aborts scanning for that entire naming context (and currently the entire run).
+- Per-object errors — such as failures to parse a security descriptor or read an attribute from a successfully-returned entry — are recorded as `Err(AdelegError::LdapQueryFailed(...))` entries in the result map for that object's location, and scanning continues for subsequent objects.
+- These per-object error entries are reported in the CSV as `Warning` records if `--show-warning-unreadable` is enabled.
 
 ### Malformed Data
 
 - Invalid security descriptors (failing `IsValidSecurityDescriptor`) produce an error that is stored per-object and optionally shown in the CSV.
 - Invalid SDDL strings in schema `defaultSecurityDescriptor` attributes produce `AdelegError::UnableToParseDefaultSecurityDescriptor` errors.
-- Objects without an `objectClass` attribute trigger a panic via `.expect()` (this is considered an assertion, as every AD object must have an `objectClass`).
+- If an object's `objectClass` attribute is missing or unreadable, the error is recorded for that object (as `Err(AdelegError::LdapQueryFailed(...))`) and scanning continues. However, if the attribute is present but its value list is empty, the code panics via `.pop().expect("assertion failed: object with an empty objectClass!?")`, as this is considered an impossible condition in a valid Active Directory.
 
 ### Unreadable Security Descriptors
 
@@ -607,3 +627,5 @@ With `--show-warning-unreadable`, each unreadable descriptor generates a CSV rec
 - If explicit credentials are provided via `--user`, `--domain`, and `--password`, they are passed to `ldap_bind_sW` using `SEC_WINNT_AUTH_IDENTITY_W` with Negotiate authentication.
 - If `--password *` is specified, the tool reads the password interactively with echo disabled.
 - Without explicit credentials, the tool uses the current Windows SSO context (implicit SSPI credentials).
+
+> **Security note:** The `--password` argument accepts the password as a cleartext command-line value. On multi-user systems, this can leak credentials through shell history, process listings (`/proc/*/cmdline`, Task Manager), and monitoring tools. The interactive mode (`--password *`) should be preferred in environments where credential exposure is a concern.
