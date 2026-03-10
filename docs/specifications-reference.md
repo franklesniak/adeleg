@@ -181,7 +181,7 @@ if default_aces.iter().any(|default_ace| ace_equivalent(default_ace, ace)) {
 ```
 
 The `ace_equivalent()` function compares two ACEs while ignoring:
-- **Read-only access rights** (`IGNORED_ACCESS_RIGHTS`): `READ_CONTROL`, `ACTRL_DS_LIST`, `DS_LIST_OBJECT`, `DS_READ_PROP`
+- **Read-only access rights** (`IGNORED_ACCESS_RIGHTS`): `ADS_RIGHT_READ_CONTROL`, `ADS_RIGHT_ACTRL_DS_LIST`, `ADS_RIGHT_DS_LIST_OBJECT`, `ADS_RIGHT_DS_READ_PROP`
 - **Object inherit flag** (`IGNORED_ACE_FLAGS`): `OBJECT_INHERIT_ACE`, since there are no "objects" in AD (only containers)
 
 ### Creator Owner Handling in Schema Defaults
@@ -551,9 +551,9 @@ The `authz` crate parses callback ACE types (`ACCESS_ALLOWED_CALLBACK_ACE_TYPE`,
 
 ### Unreadable Security Descriptors
 
-By default, unreadable security descriptors are silently counted and a summary message is printed to stderr:
+By default, unreadable security descriptors are silently counted and a summary message is printed to stderr (where `{count}` is replaced at runtime with the actual number of unreadable descriptors):
 ```
-[!] N security descriptors could not be read, use --show-warning-unreadable to see where
+[!] {count} security descriptors could not be read, use --show-warning-unreadable to see where
 ```
 With `--show-warning-unreadable`, each unreadable descriptor generates a CSV record with category `Warning`.
 
