@@ -183,7 +183,7 @@ if default_aces.iter().any(|default_ace| ace_equivalent(default_ace, ace)) {
 
 The `ace_equivalent()` function compares two ACEs while ignoring:
 - **Read-only access rights** (`IGNORED_ACCESS_RIGHTS`): `ADS_RIGHT_READ_CONTROL`, `ADS_RIGHT_ACTRL_DS_LIST`, `ADS_RIGHT_DS_LIST_OBJECT`, `ADS_RIGHT_DS_READ_PROP`
-- **Object inherit flag** (`IGNORED_ACE_FLAGS`): `OBJECT_INHERIT_ACE`. The source code comment states "there is no 'object' in Active Directory, only containers"; in practice this flag is simply masked out during ACE comparison so that two ACEs differing only in this flag are treated as equivalent
+- **Object inherit flag** (`IGNORED_ACE_FLAGS`): `OBJECT_INHERIT_ACE`. The source code comment (at `engine.rs:30`) states verbatim: `there is no "object" in Active Directory, only containers`. In Windows ACL terminology, `OBJECT_INHERIT_ACE` causes an ACE to be inherited by non-container (leaf) child objects, while `CONTAINER_INHERIT_ACE` causes inheritance to container child objects. Since Active Directory entries are all containers (OUs, domains, etc.) rather than leaf objects, the `OBJECT_INHERIT_ACE` flag has no practical effect in AD. The tool therefore masks out this flag (via bitwise AND with `!IGNORED_ACE_FLAGS`) before comparing ACEs in `ace_equivalent()`, so that two ACEs differing only in whether `OBJECT_INHERIT_ACE` is set are treated as equivalent
 
 ### Creator Owner Handling in Schema Defaults
 
