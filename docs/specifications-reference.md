@@ -340,20 +340,18 @@ In **raw mode** (`--show-raw`), the GUID is resolved through a single sequential
 4. Property set GUID → property set name (from `schema.property_set_names`)
 5. Validated write GUID → validated write name (from `schema.validated_write_names`)
 
-### Inherited Object Type Resolution
+### Inherited Object Type Resolution and Inheritance Scope
 
-When an ACE has an `inherited_object_type` GUID, it is resolved against class GUIDs to determine which child object type the ACE applies to. This is appended as ", on all {class_name} child objects".
-
-### Inheritance Scope Description
-
-If `container_inherit` is true, the description includes scope information:
-- "on all {class} child objects" if `inherited_object_type` resolves to a class
-- "on all child objects" otherwise
+When `resolve_names` is true and `container_inherit` is true, the `inherited_object_type` GUID is resolved against class GUIDs to determine which child object type the ACE applies to, and scope information is appended to the description:
+- "on all {class_name} child objects" if `inherited_object_type` resolves to a class
+- "on all child objects" otherwise (no `inherited_object_type` or unresolved GUID)
 - "and the container itself" is appended if `inherit_only` is false
+
+When `container_inherit` is false, no inheritance scope text or `inherited_object_type` resolution is included in the resolved-name output.
 
 ### Raw Mode
 
-When `--show-raw` is specified (`resolve_names` = false), access rights are shown as raw constant names and hex values (e.g., `WRITE_PROP (0x20) OBJECT_GUID=...`), including GUID lookups for classes, attributes, control accesses, property sets, and validated writes.
+When `--show-raw` is specified (`resolve_names` = false), access rights are shown as raw constant names and hex values (e.g., `WRITE_PROP (0x20) OBJECT_GUID=...`), including GUID lookups for classes, attributes, control accesses, property sets, and validated writes. Any `inherited_object_type` is emitted as `INHERIT_OBJECT_TYPE={guid}` regardless of `container_inherit`, optionally followed by a resolved class name (e.g., `(class computer)`) if the GUID matches a known class.
 
 ---
 
@@ -434,7 +432,7 @@ The CSV output has **5 columns**, written using the `csv` crate (version 1.1.6):
 | Category | Meaning |
 |---|---|
 | `Owner` | The trustee owns the object, granting implicit full control |
-| `Warning` | A structural issue: unreadable SD, blocked DACL inheritance, or non-canonical ACL |
+| `Warning` | A structural issue (unreadable SD, blocked DACL inheritance, non-canonical ACL) or a deleted trustee finding (the trustee no longer exists and should be cleaned up) |
 | `Allow ACE` | An explicit allow ACE that is not explained by any known delegation |
 | `Deny ACE` | An explicit deny ACE that is not explained by any known delegation |
 | `Built-in` | A delegation that matches a built-in (well-known) delegation definition (only shown with `--show-builtin`) |
@@ -606,7 +604,7 @@ With `--show-warning-unreadable`, each error generates a CSV record with categor
 1. **No SACL analysis**: The tool only inspects the DACL (discretionary ACL). The SACL (system ACL, used for auditing) is not analyzed or reported.
 2. **No effective permissions calculation**: The tool reports individual ACEs and delegations, not the effective cumulative permissions for a principal. Deny ACEs, group memberships, and ACE ordering must be manually considered by the reviewer.
 3. **Non-deterministic CSV ordering**: The CSV output order depends on `HashMap` iteration order, which is not deterministic across runs. The text output (non-CSV) sorts by location, but CSV does not.
-4. **No offline/snapshot mode in the Rust codebase**: The Rust version requires a live LDAP connection; it does not support loading from offline dumps (unlike the C# version which supports ORADAD).
+4. **No offline/snapshot mode in the Rust codebase**: The Rust version requires a live LDAP connection; it does not support loading from offline dumps.
 5. **Dynamic schema only**: The schema is loaded from the connected directory at runtime. If the schema is incomplete or corrupted, GUID resolution may fail, producing raw GUID strings in output.
 6. **Callback ACE conditions not evaluated**: Callback ACE types are parsed and reported, but their conditional expressions are not evaluated, meaning the reported permissions may not reflect the effective conditional access.
 7. **Single-threaded processing**: The tool processes naming contexts sequentially and does not parallelize queries across partitions.
