@@ -48,7 +48,7 @@ ADeleg is a Rust application that uses the Windows LDAP C API (`wldap32.dll`) vi
 | Windows API Function | Purpose |
 |---|---|
 | `ldap_initW` | Initialize connection handle |
-| `ldap_connect` | Establish TCP connection (2-second timeout) |
+| `ldap_connect` | Establish TCP connection (2-second `LDAP_TIMEVAL`; overall connection attempt may exceed 2 seconds due to underlying DNS/mDNS/NBNS resolution layers that must fail before this timeout starts) |
 | `ldap_bind_sW` | Authenticate (Negotiate/SPNEGO by default; explicit credentials supported) |
 | `ldap_search_ext_sW` | Execute synchronous paged search requests |
 | `ldap_create_page_controlW` | Create paging controls for large result sets |
