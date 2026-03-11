@@ -34,7 +34,7 @@ These values are stored in the `LdapConnection` struct (`winldap/src/connection.
 - **Schema partition**: queried with `LDAP_SCOPE_SUBTREE` to enumerate all `classSchema` objects (for class GUIDs and default security descriptors) and all `attributeSchema` objects (for attribute GUIDs).
 - **Configuration partition**: queried with `LDAP_SCOPE_SUBTREE` to enumerate `controlAccessRight` objects for property sets, validated writes, and control access rights.
 - **Each naming context** (including schema, configuration, domain, and application partitions): queried with `LDAP_SCOPE_SUBTREE` using the filter `(objectClass=*)`, which returns every object in the partition recursively.
-- **AdminSDHolder**: queried with `LDAP_SCOPE_BASE` at `CN=AdminSDHolder,CN=System,<domain DN>`.
+- **AdminSDHolder**: queried with `LDAP_SCOPE_BASE` at `CN=AdminSDHolder,CN=System,<domain DN>` when the naming context is a known domain NC; otherwise `CN=AdminSDHolder,CN=System,<rootDomainNamingContext>`.
 - **Individual SID lookups**: queried with `LDAP_SCOPE_BASE` using synthetic DNs like `<SID=S-1-5-...>`.
 
 ---
@@ -275,11 +275,10 @@ SID resolution is performed by `Engine::resolve_sid()` in `engine.rs` using a mu
 ### Cache Population
 
 The SID-to-display-name cache (`resolved_sid_to_dn`) is populated from multiple sources during the tool's operation:
-- **During the main scan**: When an object has an `objectSid` attribute, the mapping from SID → DN is stored.
-- **During local resolution**: When `LookupAccountSidLocalW` succeeds, the mapping from SID → `DOMAIN\Username` is stored.
-- **During LDAP SID lookup**: When a `<SID=...>` LDAP search succeeds, the mapping from SID → DN is stored.
-- For domain-specific SIDs, the mapping is always stored during the main scan.
-- For well-known SIDs (e.g., those in `CN=ForeignSecurityPrincipals`), the tool first attempts `LookupAccountSidLocalW` and only falls back to the DN if that fails.
+- **During the main scan**: When an object has an `objectSid` attribute, `resolve_sid(objectSid)` is invoked first. If the SID is domain-specific (starts with `S-1-5-21-...`), the mapping from SID → DN (using the entry's DN) is always inserted into the cache, overwriting any prior entry. If the SID is not domain-specific and `resolve_sid()` returns `None`, the SID → DN mapping is inserted as a fallback.
+- **During local resolution**: When `LookupAccountSidLocalW` succeeds, the mapping from SID → `DOMAIN\Username` is stored in the cache. For non-domain-specific SIDs, this mapping is not overwritten later by the main scan (the main scan only inserts if `resolve_sid()` returns `None`, and a successful local resolution means it won't return `None`).
+- **During LDAP SID lookup**: When a `<SID=...>` LDAP search succeeds, the mapping from SID → DN is stored in the cache. Like local resolution, this mapping is preserved for non-domain-specific SIDs.
+- For well-known or foreign SIDs (e.g., those in `CN=ForeignSecurityPrincipals`), the tool first attempts `LookupAccountSidLocalW` and the `<SID=...>` LDAP lookup via `resolve_sid()`, and the main scan intentionally avoids overwriting any existing SID → `DOMAIN\Username` or SID → DN mapping that was populated by those paths.
 
 ### Principal Type Resolution
 
