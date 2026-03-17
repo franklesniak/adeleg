@@ -819,7 +819,7 @@ The following SIDs should be recognized as unsafe trustees by default. SID-based
 
 | # | SID | Identity | Rationale |
 |---|---|---|---|
-| 1 | `S-1-1-0` | Everyone | Includes all authenticated and anonymous users |
+| 1 | `S-1-1-0` | Everyone | Includes all authenticated users (note: since Windows Server 2003, `Everyone` does **not** include `Anonymous Logon` by default — the group policy "Network access: Let Everyone permissions apply to anonymous users" controls this and is disabled by default) |
 | 2 | `S-1-5-11` | Authenticated Users | Includes every authenticated identity in the forest |
 | 3 | `S-1-5-7` | Anonymous Logon | Unauthenticated access; dangerous if delegations are granted to it |
 | 4 | `S-1-5-32-554` | Pre-Windows 2000 Compatible Access | Often includes `Authenticated Users` as a member; delegations to this group are effectively delegations to all users |
@@ -831,21 +831,23 @@ Domain-relative SIDs (those with a `<domainSID>-` prefix) should be expanded for
 
 **Comparison with ADeleginator:** ADeleginator uses name-based regex matching for `"Domain Users"`, `"Authenticated Users"`, and `"Everyone"`. The revised tool uses SID-based matching for all baseline trustees, which is correct in localized environments and immune to naming variations. ADeleginator omits Anonymous Logon, Pre-Windows 2000 Compatible Access, Domain Computers, and Domain Guests — all of which are legitimate unsafe trustee concerns.
 
-#### 16.3.2. Current User Group Membership Augmentation
+#### 16.3.2. Current User Group Membership Resolution (for Exploitability Annotation Only)
 
 ADeleginator augments the unsafe trustee list with the current user's non-Tier-0 group memberships, using the `memberOf` attribute. However, its implementation has two critical bugs:
 
 1. **All-or-nothing group append**: If the user belongs to at least one non-Tier-0 group, *all* of the user's groups (including Tier 0 groups) are appended to the unsafe list. This causes Tier 0 groups to be incorrectly flagged as unsafe trustees.
 2. **Space-join bug**: The group array is concatenated with spaces instead of regex alternation operators (`|`), producing a single never-matching regex alternative.
 
-The revised tool should fix both issues and use a more robust approach:
+Beyond these bugs, the approach itself is flawed: merging user-specific group memberships into the policy-based unsafe trustee set causes risk classification to depend on who runs the tool, making reports non-reproducible across different operators.
+
+The revised tool should resolve current user group memberships using a more robust method, but store them in a **separate** set used only for exploitability annotation (Section 16.7):
 
 1. **Enumerate the current user's transitive group memberships** using the `tokenGroups` constructed attribute: `new DirectoryEntry("LDAP://<SID=" + currentUserSid.Value + ">").RefreshCache(new string[] { "tokenGroups" })`, then read `Properties["tokenGroups"]` which returns an array of SID byte arrays. Parse each with `new SecurityIdentifier(bytes, 0)`. This resolves transitive/nested groups that `memberOf` misses.
-2. **Filter out Tier 0 groups** (Section 16.4) by SID comparison: for each group SID, check if it appears in the Tier 0 SID set. Only non-Tier-0 group SIDs are appended to the unsafe trustee set.
-3. **Include the current user's own SID** in the unsafe trustee set (unless the user is a Tier 0 principal), since delegations to the current user's account directly are equally actionable.
-4. **Perform matching by SID**, not by name: during the scan, each ACE trustee SID is compared against the unsafe trustee SID set using `SecurityIdentifier.Equals()`. No regex or string matching is needed.
+2. **Store the current user's SID and all group SIDs** in a separate "current user principals" `Dictionary<string, bool>` (see Section 16.7.1 and Section 16.11.1). This set is **not** merged into the unsafe trustee set.
+3. **Use the current user principals set** exclusively for the per-finding `Current User Can Exploit` annotation (Section 16.7.2), not for risk-level classification.
+4. **Perform matching by SID**, not by name: during the scan, each ACE trustee SID is compared against the current user principals set using `Dictionary.ContainsKey()`. No regex or string matching is needed.
 
-**Implementation in .NET Framework 2.0:** The `tokenGroups` approach requires `DirectoryEntry.RefreshCache()` with the constructed attribute, which is available in `System.DirectoryServices`. The returned byte arrays are parsed with `new SecurityIdentifier(byte[], int)`. Store the unsafe trustee SIDs in a `Dictionary<string, string>` keyed by `SecurityIdentifier.Value` for O(1) lookup during the scan.
+**Implementation in .NET Framework 2.0:** The `tokenGroups` approach requires `DirectoryEntry.RefreshCache()` with the constructed attribute, which is available in `System.DirectoryServices`. The returned byte arrays are parsed with `new SecurityIdentifier(byte[], int)`. Store the current user principal SIDs in a `Dictionary<string, bool>` keyed by `SecurityIdentifier.Value` for O(1) lookup during the scan (see Section 16.11.1 for the rationale for using `Dictionary<string, bool>` as a set in .NET Framework 2.0).
 
 #### 16.3.3. Configurable Unsafe Trustee Definitions
 
@@ -938,9 +940,9 @@ The following delegation types should be classified as dangerous by default, org
 | 2 | `ActiveDirectoryRights.WriteOwner` | `"Change the owner"` | Can take ownership, then rewrite the DACL |
 | 3 | `ActiveDirectoryRights.WriteDacl` | `"add/delete delegations"` | Can directly modify the DACL to grant any permission |
 | 4 | `GenericAll` (value `0xF01FF`) present in access mask | *(not detected by ADeleginator)* | Full control — grants every possible permission on the object |
-| 5 | `GenericWrite` (value `0x20028`) present in access mask | *(not detected by ADeleginator)* | Write all properties + all validated writes — very broad write access |
+| 5 | `GenericWrite` (value `0x20028`) present in access mask | *(not detected by ADeleginator)* | `ReadControl` + `WriteProperty` + `Self` (write all properties + all validated writes) — very broad write access |
 
-**Note on GenericAll and GenericWrite:** `ActiveDirectoryRights` defines `GenericAll` (value `983551` / `0xF01FF`) which combines all standard and specific rights into full control. `GenericWrite` (value `131112` / `0x20028`) combines `WriteProperty`, `Self`, and `WritePropertyExtended`. ADeleginator does not detect these because it pattern-matches specific human-readable strings, missing the generic right composites. The revised tool should detect these by checking the raw access mask bits: `((int)rule.ActiveDirectoryRights & 0xF01FF) == 0xF01FF` for GenericAll, and `((int)rule.ActiveDirectoryRights & 0x20028) == 0x20028` for GenericWrite.
+**Note on GenericAll and GenericWrite:** `ActiveDirectoryRights` defines `GenericAll` (value `983551` / `0xF01FF`) which combines all standard and specific rights into full control. `GenericWrite` (value `131112` / `0x20028`) decomposes into `ReadControl` (`0x20000`) | `WriteProperty` (`0x20`) | `Self` (`0x8`). Note that `ReadControl` is a read-only right (included in the ignored set per Section 6.5), so the dangerous components of `GenericWrite` are `WriteProperty` and `Self` — granting write access to all properties and all validated writes. ADeleginator does not detect these because it pattern-matches specific human-readable strings, missing the generic right composites. The revised tool should detect these by checking the raw access mask bits: `((int)rule.ActiveDirectoryRights & 0xF01FF) == 0xF01FF` for GenericAll, and `((int)rule.ActiveDirectoryRights & 0x20028) == 0x20028` for GenericWrite.
 
 **Category B — Dangerous Write Delegations (dangerous when the object type GUID targets a sensitive attribute or is empty):**
 
@@ -990,9 +992,9 @@ The following delegation types should be classified as dangerous by default, org
 
 The dangerous delegation types in Category B and Category E require comparing the `ActiveDirectoryAccessRule.ObjectType` GUID against specific schema attribute GUIDs and control access right GUIDs. These GUIDs should be resolved during the schema loading phase (Step 2 of the pipeline described in Section 9 of the reference spec):
 
-1. During schema attribute enumeration (`ActiveDirectorySchema.GetCurrentSchema().FindAllProperties()`), build a `Dictionary<Guid, string>` mapping attribute `SchemaGuid` values to `Name` values.
-2. Look up each dangerous attribute by `Name` (e.g., `"servicePrincipalName"`, `"msDS-AllowedToActOnBehalfOfOtherIdentity"`) and retrieve its `SchemaGuid`.
-3. Store the dangerous attribute GUIDs in a `Dictionary<Guid, string>` for O(1) lookup during the scan.
+1. During schema attribute enumeration (`ActiveDirectorySchema.GetCurrentSchema().FindAllProperties()`), build a `Dictionary<string, Guid>` mapping attribute `Name` (lDAPDisplayName) values to `SchemaGuid` values. This name-to-GUID map is needed because the dangerous attribute definitions (Section 16.5.1, Category B) reference attributes by name.
+2. Look up each dangerous attribute by `Name` (e.g., `"servicePrincipalName"`, `"msDS-AllowedToActOnBehalfOfOtherIdentity"`) in the name-to-GUID map and retrieve its `SchemaGuid`.
+3. Store the resolved dangerous attribute GUIDs in a `Dictionary<Guid, string>` mapping GUID to attack description, for O(1) lookup during the scan when evaluating each ACE's `ObjectType` GUID.
 4. If a dangerous attribute name is not found in the schema (e.g., `msDS-KeyCredentialLink` may not exist in older schema versions), log a warning to stderr and skip that detection rule.
 
 **Implementation in .NET Framework 2.0:** Use `ActiveDirectorySchemaProperty` objects from `ActiveDirectorySchema.GetCurrentSchema().FindAllProperties()`, accessing `.SchemaGuid` for GUID values and `.Name` for `lDAPDisplayName` values. Control access right GUIDs (Category C) are well-known fixed values that do not require schema lookup.
@@ -1005,7 +1007,7 @@ DCSync requires **both** `DS-Replication-Get-Changes` and `DS-Replication-Get-Ch
 2. When an `ExtendedRight` ACE with the `DS-Replication-Get-Changes-All` GUID is found on the same domain root object for the same trustee SID, flag the combination as a `Critical` risk DCSync finding.
 3. Each individual replication right should still be flagged independently (as `High` risk), since they are unusual for non-DC principals and may indicate a partially-configured DCSync delegation.
 
-**Implementation in .NET Framework 2.0:** Use a `Dictionary<string, Dictionary<string, bool>>` keyed by resource DN, then by trustee SID `Value`, tracking which replication rights have been seen. After scanning each domain root object's ACEs, check for the compound condition.
+**Implementation in .NET Framework 2.0:** Use a `Dictionary<string, Dictionary<string, int>>` keyed by resource DN, then by trustee SID `Value`, where the `int` value is a bitmask tracking which replication rights have been seen (bit 0 / value `1` = DS-Replication-Get-Changes, bit 1 / value `2` = DS-Replication-Get-Changes-All; a value of `3` indicates both rights are present — the DCSync compound condition). After scanning each domain root object's ACEs, check for trustee entries where the bitmask equals `3`. See Section 16.11.1 for the data structure summary.
 
 #### 16.5.4. Configurable Dangerous Delegation Definitions
 
@@ -1064,7 +1066,7 @@ The following matrix defines the risk level for each combination:
 
 During the scan, after each ACE passes the `is_ace_interesting()` filter (or its .NET equivalent), the tool should evaluate the risk classification matrix:
 
-1. **Check trustee**: Look up the ACE's trustee SID in the unsafe trustee `Dictionary<string, string>` (keyed by `SecurityIdentifier.Value`). If found, set `isUnsafeTrustee = true`.
+1. **Check trustee**: Look up the ACE's trustee SID in the unsafe trustee `Dictionary<string, bool>` (keyed by `SecurityIdentifier.Value`). If found, set `isUnsafeTrustee = true`.
 2. **Check resource**: Look up the current object's DN (or SID, for security principals) in the Tier 0 resource set. If found, set `isTier0Resource = true`.
 3. **Check delegation type**: Evaluate the ACE's `ActiveDirectoryRights` flags and `ObjectType` GUID against the dangerous delegation type definitions (Section 16.5.1). Determine the matching category (A through E) and whether a DCSync compound condition exists.
 4. **Apply the matrix**: Use the three boolean/categorical values to determine the `Risk Level` from the matrix in Section 16.6.2.
@@ -1082,10 +1084,12 @@ At startup (before the main scan), the tool should:
 
 1. Retrieve the current user's SID via `System.Security.Principal.WindowsIdentity.GetCurrent().User` (returns a `SecurityIdentifier`).
 2. Resolve the current user's transitive group memberships using the `tokenGroups` constructed attribute (see Section 16.3.2).
-3. Add the current user's SID and non-Tier-0 group SIDs to the unsafe trustee set.
+3. Store the current user's SID and all transitive group SIDs in a **separate** `Dictionary<string, bool>` (the "current user principals set"), keyed by `SecurityIdentifier.Value`. This set is used **exclusively** for the per-finding "Current User Can Exploit" annotation (Section 16.7.2) and is **not** merged into the policy-based unsafe trustee set (Section 16.3). Keeping these sets separate ensures that risk classification (`Risk Level` column) is deterministic and reproducible regardless of who runs the tool, while the exploitability annotation (`Current User Can Exploit` column) reflects the operator's specific context.
 4. Report the current user context to stderr: `Console.Error.WriteLine(String.Format("[Info] Running as: {0} ({1}), member of {2} groups ({3} non-Tier-0)", ntAccount.Value, currentUserSid.Value, totalGroups, nonTier0Groups))`.
 
 **Implementation in .NET Framework 2.0:** `WindowsIdentity.GetCurrent()` is available in `System.Security.Principal`. The `User` property returns a `SecurityIdentifier`. `Translate(typeof(NTAccount))` resolves the display name.
+
+**Rationale for separate sets:** ADeleginator merges the current user's group memberships into the unsafe trustee list, which means that risk classification results depend on who runs the tool — different operators produce different risk reports for the same environment. This hurts repeatability and makes it impossible to compare reports across runs by different users. The revised tool keeps the unsafe trustee set policy-based (baseline SIDs from Section 16.3.1 plus any XML-configured additions from Section 16.3.3), ensuring that the `Risk Level` column is identical regardless of operator. The operator-specific context is captured in the separate `Current User Can Exploit` column, which is clearly labeled as user-dependent.
 
 #### 16.7.2. Per-Finding "Exploitable by Current User" Annotation
 
@@ -1170,8 +1174,8 @@ The following table summarizes the specific ADeleginator defects and limitations
 | ADeleginator Defect/Limitation | Correction in Revised Tool |
 |---|---|
 | **Name-based regex matching** — fragile, locale-dependent, susceptible to false positives from substring matching (e.g., `"delete"` matches `"delete child objects"`) | **SID-based and access-mask-based matching** — language-independent, structurally precise, no regex needed |
-| **Space-join bug** — current user's groups are space-joined into a single never-matching regex alternative | **Eliminated** — groups are added individually to a `Dictionary<string, string>` keyed by SID; no string concatenation involved |
-| **All-or-nothing group append** — if any non-Tier-0 group exists, all groups (including Tier 0) are added as unsafe | **Per-group evaluation** — each group SID is individually checked against the Tier 0 set; only non-Tier-0 SIDs are added to the unsafe trustee set |
+| **Space-join bug** — current user's groups are space-joined into a single never-matching regex alternative | **Eliminated** — groups are resolved via `tokenGroups` and stored individually in a `Dictionary<string, bool>` keyed by SID; no string concatenation involved |
+| **All-or-nothing group append** — if any non-Tier-0 group exists, all groups (including Tier 0) are added as unsafe | **Separated concerns** — current user groups are stored in a separate "current user principals" set used only for the `Current User Can Exploit` annotation, not merged into the policy-based unsafe trustee set; risk classification is deterministic regardless of who runs the tool |
 | **Unescaped regex metacharacters** — `"Users (container)"` fails to match due to unescaped parentheses | **Eliminated** — no regex is used; matching is by SID, DN pattern, or object class |
 | **Only 3 baseline unsafe trustees** — misses Anonymous Logon, Pre-Windows 2000 Compatible Access, Domain Computers, Domain Guests | **7 baseline unsafe trustee SIDs** — covers the full set of broadly-scoped well-known principals |
 | **Only 20 Tier 0 resources** — misses Schema/Configuration roots, trust objects, ADCS objects, Key Admins, RODCs | **26+ Tier 0 resources** — covers critical structural objects, ADCS, trusts, and additional privileged groups |
