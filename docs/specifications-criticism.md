@@ -296,10 +296,10 @@ The spec references the Rust `csv` crate for RFC 4180-compliant output. .NET Fra
 | Spec Behavior | .NET Framework 2.0 Replacement |
 |---|---|
 | Write RFC 4180 CSV via `csv` crate | `StreamWriter` with manual RFC 4180 quoting — fields containing commas, double-quotes, or newlines are enclosed in double-quotes, with embedded double-quotes escaped as `""` |
-| Write to file or stdout | `new StreamWriter(path)` for file output (defaults to UTF-8 without BOM); `Console.Out` for stdout |
-| UTF-8 encoding without BOM | `StreamWriter`'s default constructor uses UTF-8 without BOM. To be explicit: `new StreamWriter(path, false, new UTF8Encoding(false))`. Note: `Encoding.UTF8` emits a BOM — avoid using it directly with `StreamWriter` |
+| Write to file or stdout | `new StreamWriter(path)` for file output (defaults to UTF-8 without BOM); for stdout, wrap `Console.OpenStandardOutput()` in `new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false))` to guarantee UTF-8 without BOM regardless of the system's OEM code page |
+| UTF-8 encoding without BOM | `StreamWriter`'s default constructor uses UTF-8 without BOM. To be explicit: `new StreamWriter(path, false, new UTF8Encoding(false))`. Note: `Encoding.UTF8` emits a BOM — avoid using it directly with `StreamWriter`. For stdout, `Console.Out` uses `Console.OutputEncoding` (often an OEM code page on Windows), so always use `Console.OpenStandardOutput()` wrapped in a `StreamWriter` with `new UTF8Encoding(false)` to ensure consistent UTF-8 output |
 
-**Impact on the revised spec:** The revised spec should define CSV output in terms of `StreamWriter` with explicit RFC 4180 quoting rules. Since .NET Framework 2.0 has no CSV library, the spec should define the exact quoting behavior required (which is trivial to implement: ~20 lines of code). The output should use UTF-8 encoding without a BOM for both file and stdout output, ensuring maximum compatibility with downstream tooling and piping.
+**Impact on the revised spec:** The revised spec should define CSV output in terms of `StreamWriter` with explicit RFC 4180 quoting rules. Since .NET Framework 2.0 has no CSV library, the spec should define the exact quoting behavior required (which is trivial to implement: ~20 lines of code). The output should use UTF-8 encoding without a BOM for both file and stdout output. For stdout, the spec must require wrapping `Console.OpenStandardOutput()` in a `StreamWriter` with `new UTF8Encoding(false)` rather than using `Console.Out` directly, since `Console.OutputEncoding` defaults to the system's OEM code page on Windows.
 
 #### 1.5.23. Progress Reporting (New Behavior — Not in Current Spec)
 
@@ -307,9 +307,9 @@ The current spec has no progress reporting. For a console tool scanning large fo
 
 | Behavior | .NET Framework 2.0 Implementation |
 |---|---|
-| Report current naming context being scanned | `Console.Error.Write("\r[Scanning {ncDN}] {count} objects processed...")` — write to stderr with carriage return for in-place updates |
+| Report current naming context being scanned | `Console.Error.Write(String.Format("\r[Scanning {0}] {1} objects processed...", ncDN, count))` — write to stderr with carriage return for in-place updates |
 | Report elapsed time | `System.Diagnostics.Stopwatch.Elapsed` — high-resolution timer available in .NET Framework 2.0 |
-| Report scan summary | `Console.Error.WriteLine("[Done] {total} objects, {findings} findings, {elapsed}")` |
+| Report scan summary | `Console.Error.WriteLine(String.Format("[Done] {0} objects, {1} findings, {2}", total, findings, elapsed))` |
 
 **Impact on the revised spec:** The revised spec should define a progress reporting protocol using stderr. This keeps stdout clean for CSV/text data output while providing operational visibility. The `Stopwatch` class provides precise timing using managed APIs only.
 
@@ -331,7 +331,7 @@ The current spec has no progress reporting. For a console tool scanning large fo
 | Owner retrieval | ✅ Yes | `ActiveDirectorySecurity.GetOwner()` |
 | Schema class/attribute enumeration | ✅ Yes | `ActiveDirectorySchema.FindAllClasses()` / `FindAllProperties()` |
 | RootDSE bootstrap | ✅ Yes | `DirectoryEntry("LDAP://RootDSE")` |
-| Connection timeouts | ✅ Yes | `DirectorySearcher.ClientTimeout`, `DirectoryEntry.Options` |
+| Connection timeouts | ✅ Yes | `DirectorySearcher.ClientTimeout` / `DirectorySearcher.ServerTimeLimit` |
 | Access mask interpretation | ✅ Yes | `ActiveDirectoryRights` flags enum with bitwise checks (or `Enum.HasFlag()` on .NET 4.0+), `ToString()` |
 | ACL canonicality check | ✅ Yes | `CommonAcl.IsCanonical` for detection; manual iteration for specific ACE identification |
 | DACL inheritance protection | ✅ Yes | `ActiveDirectorySecurity.AreAccessRulesProtected` |
@@ -608,8 +608,8 @@ The spec states that a search-level LDAP error during `get_explicit_aces()` "abo
 
 The spec does not define any progress reporting mechanism. In large forests with millions of objects, scanning can take a very long time. As detailed in Section 1.5.23, .NET Framework 2.0 supports progress reporting via `Console.Error.Write()` (to avoid mixing with CSV data on stdout) and `System.Diagnostics.Stopwatch` for precise elapsed-time tracking. The revised spec should define a progress reporting protocol, e.g.:
 
-- `Console.Error.Write("\r[{ncDN}] {count} objects processed...")` — in-place progress updates via carriage return
-- `Console.Error.WriteLine("[Done] {total} objects, {findings} findings, {elapsed}")` — final summary
+- `Console.Error.Write(String.Format("\r[{0}] {1} objects processed...", ncDN, count))` — in-place progress updates via carriage return
+- `Console.Error.WriteLine(String.Format("[Done] {0} objects, {1} findings, {2}", total, findings, elapsed))` — final summary
 
 ---
 
