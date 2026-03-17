@@ -21,6 +21,7 @@ This document provides functional and technical criticism of the specification d
 13. [Usability and Operational Concerns](#13-usability-and-operational-concerns)
 14. [Security Considerations](#14-security-considerations)
 15. [Assumptions That Should Be Re-evaluated](#15-assumptions-that-should-be-re-evaluated)
+16. [Risk Classification and Insecure Delegation Detection (ADeleginator-Equivalent Functionality)](#16-risk-classification-and-insecure-delegation-detection-adeleginator-equivalent-functionality)
 
 ---
 
@@ -779,3 +780,437 @@ The choice of .NET Framework 2.0 deserves a clear justification in the revised s
 - Whether .NET Framework 2.0 is chosen because it's pre-installed on those versions
 - What trade-offs are accepted by choosing .NET Framework 2.0 (no modern TLS defaults, no LINQ, limited async, etc.)
 - Whether .NET 4.0 or .NET Standard 2.0 would be acceptable alternatives that provide better APIs while still supporting reasonably old Windows versions
+
+---
+
+## 16. Risk Classification and Insecure Delegation Detection (ADeleginator-Equivalent Functionality)
+
+> **Context:** ADeleginator is a separate wrapper tool that post-processes the CSV output of ADeleg to identify insecure delegations. It applies regex-based pattern matching against hardcoded lists of unsafe trustees, Tier 0 resources, and dangerous delegation types, producing filtered reports of insecure trustee delegations and insecure resource delegations. This section prescribes equivalent functionality — with significant corrections and improvements — to be integrated directly into the revised tool. By incorporating risk classification natively, the revised tool eliminates the need for an external wrapper, gains access to the structured data already available during the scan (SIDs, GUIDs, object classes, access masks), and avoids the fragility of regex-based name matching on CSV text output.
+
+### 16.1. Overview: Integrated Risk Classification Instead of a Separate Wrapper
+
+ADeleginator runs ADeleg, reads the CSV output, and performs regex-based filtering to identify insecure delegations. This wrapper approach has several fundamental limitations:
+
+1. **Loss of structured data**: By the time ADeleginator processes results, SIDs have been resolved to display names, access masks have been rendered as human-readable text, and GUIDs have been resolved to schema names. Filtering must then reverse-engineer these transformations through regex pattern matching, which is inherently fragile and lossy.
+2. **Name-based matching is locale-dependent**: ADeleginator matches trustees and resources by name (e.g., `"Domain Users"`, `"Domain Admins"`). In non-English Active Directory environments, these names are localized (e.g., `"Domänen-Benutzer"` in German, `"Usuarios del dominio"` in Spanish). Name-based matching will silently miss all localized equivalents.
+3. **External dependency**: Requiring a separate ADeleg binary introduces version compatibility concerns, deployment complexity, and a single point of failure.
+
+The revised tool should perform risk classification **during** the scan, when the raw SIDs, access masks, GUIDs, and object metadata are available as typed values. This eliminates regex fragility, enables SID-based matching (which is language-independent), and produces richer risk annotations.
+
+### 16.2. CSV Output: New `Risk Level` Column
+
+The revised tool should add a **sixth column** to the CSV output schema (see Section 7.2, which already recommends additional structured columns):
+
+| Column | Name | Description |
+|---|---|---|
+| 6 | **Risk Level** | A risk classification for the row. One of: `Critical`, `High`, `Medium`, `Informational`, or empty (blank) for rows that do not match any risk rule. |
+
+The `Risk Level` column should be populated for every CSV row by evaluating the risk classification rules defined in Sections 16.5 and 16.6. Rows that do not match any risk rule should have an empty (blank) value in this column, preserving backward compatibility with tooling that does not use the column.
+
+**Rationale for a column rather than a separate file only:** A column in the main CSV enables downstream tools to filter, sort, and pivot on risk level without requiring a separate join operation. It also ensures that risk classification is visible in context alongside the full delegation details (trustee, resource, rights, category). Separate filtered reports (Section 16.8) are prescribed as an additional convenience, not as a replacement.
+
+### 16.3. Unsafe Trustee Identification
+
+ADeleginator identifies unsafe trustees using a regex pattern of three hardcoded names (`Domain Users`, `Authenticated Users`, `Everyone`) plus the current user's group memberships. The revised tool should replace this with SID-based matching using a structured, configurable unsafe trustee list.
+
+#### 16.3.1. Baseline Unsafe Trustee SIDs
+
+The following SIDs should be recognized as unsafe trustees by default. SID-based matching is language-independent and unambiguous:
+
+| # | SID | Identity | Rationale |
+|---|---|---|---|
+| 1 | `S-1-1-0` | Everyone | Includes all authenticated and anonymous users |
+| 2 | `S-1-5-11` | Authenticated Users | Includes every authenticated identity in the forest |
+| 3 | `S-1-5-7` | Anonymous Logon | Unauthenticated access; dangerous if delegations are granted to it |
+| 4 | `S-1-5-32-554` | Pre-Windows 2000 Compatible Access | Often includes `Authenticated Users` as a member; delegations to this group are effectively delegations to all users |
+| 5 | `<domainSID>-513` | Domain Users (per domain) | Every domain user account is a member |
+| 6 | `<domainSID>-515` | Domain Computers (per domain) | Every domain-joined computer is a member; compromise of any workstation grants these permissions |
+| 7 | `<domainSID>-514` | Domain Guests (per domain) | Guest accounts; should never hold delegations |
+
+Domain-relative SIDs (those with a `<domainSID>-` prefix) should be expanded for each known domain discovered via `Forest.GetCurrentForest().Domains`, using the domain SID retrieved from `Domain.GetDirectoryEntry().Properties["objectSid"]` parsed with `new SecurityIdentifier(bytes, 0)`.
+
+**Comparison with ADeleginator:** ADeleginator uses name-based regex matching for `"Domain Users"`, `"Authenticated Users"`, and `"Everyone"`. The revised tool uses SID-based matching for all baseline trustees, which is correct in localized environments and immune to naming variations. ADeleginator omits Anonymous Logon, Pre-Windows 2000 Compatible Access, Domain Computers, and Domain Guests — all of which are legitimate unsafe trustee concerns.
+
+#### 16.3.2. Current User Group Membership Augmentation
+
+ADeleginator augments the unsafe trustee list with the current user's non-Tier-0 group memberships, using the `memberOf` attribute. However, its implementation has two critical bugs:
+
+1. **All-or-nothing group append**: If the user belongs to at least one non-Tier-0 group, *all* of the user's groups (including Tier 0 groups) are appended to the unsafe list. This causes Tier 0 groups to be incorrectly flagged as unsafe trustees.
+2. **Space-join bug**: The group array is concatenated with spaces instead of regex alternation operators (`|`), producing a single never-matching regex alternative.
+
+The revised tool should fix both issues and use a more robust approach:
+
+1. **Enumerate the current user's transitive group memberships** using the `tokenGroups` constructed attribute: `new DirectoryEntry("LDAP://<SID=" + currentUserSid.Value + ">").RefreshCache(new string[] { "tokenGroups" })`, then read `Properties["tokenGroups"]` which returns an array of SID byte arrays. Parse each with `new SecurityIdentifier(bytes, 0)`. This resolves transitive/nested groups that `memberOf` misses.
+2. **Filter out Tier 0 groups** (Section 16.4) by SID comparison: for each group SID, check if it appears in the Tier 0 SID set. Only non-Tier-0 group SIDs are appended to the unsafe trustee set.
+3. **Include the current user's own SID** in the unsafe trustee set (unless the user is a Tier 0 principal), since delegations to the current user's account directly are equally actionable.
+4. **Perform matching by SID**, not by name: during the scan, each ACE trustee SID is compared against the unsafe trustee SID set using `SecurityIdentifier.Equals()`. No regex or string matching is needed.
+
+**Implementation in .NET Framework 2.0:** The `tokenGroups` approach requires `DirectoryEntry.RefreshCache()` with the constructed attribute, which is available in `System.DirectoryServices`. The returned byte arrays are parsed with `new SecurityIdentifier(byte[], int)`. Store the unsafe trustee SIDs in a `Dictionary<string, string>` keyed by `SecurityIdentifier.Value` for O(1) lookup during the scan.
+
+#### 16.3.3. Configurable Unsafe Trustee Definitions
+
+The baseline unsafe trustee list and the Tier 0 exemption list (Section 16.4) should be configurable via the XML delegation/template format (see Section 8.1). The XML schema should support:
+
+- Adding custom unsafe trustee SIDs (e.g., organization-specific broad groups)
+- Removing baseline unsafe trustee SIDs (e.g., if an organization has locked down `Pre-Windows 2000 Compatible Access`)
+- Specifying trustees by SID pattern (e.g., `<domainSID>-513` for Domain Users across all domains)
+
+At runtime, SID patterns containing `<domainSID>` should be expanded for each known domain, similarly to how delegation location wildcards (`DC=*`) are expanded in Section 8.3.
+
+### 16.4. Tier 0 (Critical) Resource Identification
+
+ADeleginator uses a hardcoded list of 20 resource names matched by regex. The revised tool should replace this with a structured, SID-based and DN-pattern-based Tier 0 identification system.
+
+#### 16.4.1. Expanded Tier 0 Resource Definitions
+
+The following resources should be classified as Tier 0 by default. Resources are identified by SID (for security principals) or by DN pattern and object class (for non-principal objects):
+
+**Tier 0 Security Principals (identified by SID):**
+
+| # | SID Pattern | Identity | Rationale |
+|---|---|---|---|
+| 1 | `<domainSID>-500` | Administrator | Built-in administrator account — full domain control |
+| 2 | `<domainSID>-502` | krbtgt | Kerberos ticket-granting account — compromise enables Golden Ticket attacks |
+| 3 | `<domainSID>-512` | Domain Admins | Full administrative control over the domain |
+| 4 | `<domainSID>-516` | Domain Controllers | Machine accounts for all DCs |
+| 5 | `<domainSID>-518` | Schema Admins | Can modify the AD schema — forest-wide impact |
+| 6 | `<domainSID>-519` | Enterprise Admins | Full administrative control over the entire forest |
+| 7 | `<domainSID>-521` | Read-Only Domain Controllers | RODC machine accounts |
+| 8 | `<domainSID>-526` | Key Admins | Can perform privileged key operations |
+| 9 | `<domainSID>-527` | Enterprise Key Admins | Forest-wide key administration |
+| 10 | `S-1-5-32-544` | BUILTIN\Administrators | Local administrators group |
+| 11 | `S-1-5-32-548` | Account Operators | Can modify most user and group accounts |
+| 12 | `S-1-5-32-549` | Server Operators | Can administer domain controllers |
+| 13 | `S-1-5-32-550` | Print Operators | Can load drivers on DCs — code execution vector |
+| 14 | `S-1-5-32-551` | Backup Operators | Can back up and restore domain controller data — can extract the AD database |
+
+**Tier 0 Structural Objects (identified by DN pattern and/or object class):**
+
+| # | Identification Method | Identity | Rationale |
+|---|---|---|---|
+| 15 | DN = `<domainDN>` (the domain root object) | Domain root object | ACEs here can grant domain-wide permissions via inheritance |
+| 16 | DN = `CN=AdminSDHolder,CN=System,<domainDN>` | AdminSDHolder | SDProp copies this DACL to all protected accounts |
+| 17 | DN = `OU=Domain Controllers,<domainDN>` | Domain Controllers OU | Contains all DC machine accounts |
+| 18 | DN = `CN=Users,<domainDN>` | Users container | Default location for privileged accounts |
+| 19 | DN = `CN=Schema,CN=Configuration,<forestRootDN>` | Schema partition root | Controls the AD schema |
+| 20 | DN = `CN=Configuration,<forestRootDN>` | Configuration partition root | Controls forest-wide configuration |
+| 21 | DN = `CN=Sites,CN=Configuration,<forestRootDN>` | Sites container | Controls AD replication topology |
+| 22 | DN = `CN=Partitions,CN=Configuration,<forestRootDN>` | Partitions container | Controls naming context references |
+| 23 | `objectClass=trustedDomain` | Trust objects | Control trust relationships — can enable cross-forest attack paths |
+| 24 | `objectClass=pKICertificateTemplate` in `CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,<forestRootDN>` | Certificate templates | Misconfigured templates enable ESC1–ESC8 privilege escalation |
+| 25 | `objectClass=pKIEnrollmentService` in `CN=Enrollment Services,CN=Public Key Services,CN=Services,CN=Configuration,<forestRootDN>` | Enterprise CA objects | Certificate Authority enrollment service objects |
+| 26 | Objects with `objectClass=groupPolicyContainer` linked (via `gpLink`) to Tier 0 OUs/domains | GPOs linked to Tier 0 containers | Modification of linked GPOs grants code execution on Tier 0 systems |
+
+**Comparison with ADeleginator:** ADeleginator defines 20 resources by name, matched via regex. The revised tool uses SID-based matching for principals (language-independent, unambiguous) and DN-pattern/object-class matching for structural objects (structural, not name-dependent). The revised list is also significantly expanded — ADeleginator omits Schema/Configuration partition roots, Sites, Partitions, trust objects, ADCS certificate templates and enrollment services, Key Admins, Enterprise Key Admins, and RODC accounts.
+
+#### 16.4.2. Tier 0 GPO Detection
+
+ADeleginator includes `"GPO linked to Tier Zero container"` as a Tier 0 resource but provides no mechanism to actually resolve which GPOs are linked to Tier 0 containers. The revised tool should implement this by:
+
+1. For each Tier 0 container identified above (domain root, Domain Controllers OU, Users container), read the `gpLink` attribute (available via `DirectoryEntry.Properties["gpLink"]`).
+2. Parse the `gpLink` value, which is a string of the form `[LDAP://CN={GUID},CN=Policies,CN=System,<domainDN>;status]`, extracting each linked GPO's DN.
+3. Add each linked GPO DN to the Tier 0 resource set.
+4. This resolution should be performed once during the bootstrap phase (after domain enumeration, before the main scan) and cached for the duration of the scan.
+
+**Implementation in .NET Framework 2.0:** Read `gpLink` as a string property from the relevant `DirectoryEntry` objects. Parse the semicolon-and-bracket-delimited format using `String.Split()` and `String.IndexOf()` — no regex is needed for this structured format.
+
+#### 16.4.3. Configurable Tier 0 Definitions
+
+The Tier 0 resource list should be configurable via the XML delegation/template format (see Section 8.1). The XML schema should support:
+
+- Adding custom Tier 0 resources by SID, DN, DN pattern, or object class
+- Removing default Tier 0 resources (e.g., if an organization intentionally delegates control of the Users container)
+- Specifying Tier 0 sub-tiers (e.g., `Tier0-Critical` vs. `Tier0-High`) for more granular risk classification
+
+### 16.5. Dangerous Delegation Type Detection
+
+ADeleginator identifies seven dangerous delegation patterns by regex-matching the human-readable `Details` field: `owns`, `write all properties`, `create child objects`, `delete child objects`, `Change the owner`, `add/delete delegations`, `delete`. The revised tool should replace this with access-mask-based and GUID-based detection using the typed `ActiveDirectoryAccessRule` properties available during the scan.
+
+#### 16.5.1. Baseline Dangerous Delegation Types
+
+The following delegation types should be classified as dangerous by default, organized by the `ActiveDirectoryRights` flags enum values and object type GUIDs that identify them:
+
+**Category A — Full-Control Delegations (always dangerous regardless of object type GUID):**
+
+| # | Detection Criteria | ADeleginator Equivalent | Human-Readable Description |
+|---|---|---|---|
+| 1 | Owner SID matches unsafe trustee | `"owns"` | Ownership grants implicit WRITE_DAC + READ_CONTROL — the owner can rewrite the entire DACL |
+| 2 | `ActiveDirectoryRights.WriteOwner` | `"Change the owner"` | Can take ownership, then rewrite the DACL |
+| 3 | `ActiveDirectoryRights.WriteDacl` | `"add/delete delegations"` | Can directly modify the DACL to grant any permission |
+| 4 | `GenericAll` (value `0xF01FF`) present in access mask | *(not detected by ADeleginator)* | Full control — grants every possible permission on the object |
+| 5 | `GenericWrite` (value `0x20028`) present in access mask | *(not detected by ADeleginator)* | Write all properties + all validated writes — very broad write access |
+
+**Note on GenericAll and GenericWrite:** `ActiveDirectoryRights` defines `GenericAll` (value `983551` / `0xF01FF`) which combines all standard and specific rights into full control. `GenericWrite` (value `131112` / `0x20028`) combines `WriteProperty`, `Self`, and `WritePropertyExtended`. ADeleginator does not detect these because it pattern-matches specific human-readable strings, missing the generic right composites. The revised tool should detect these by checking the raw access mask bits: `((int)rule.ActiveDirectoryRights & 0xF01FF) == 0xF01FF` for GenericAll, and `((int)rule.ActiveDirectoryRights & 0x20028) == 0x20028` for GenericWrite.
+
+**Category B — Dangerous Write Delegations (dangerous when the object type GUID targets a sensitive attribute or is empty):**
+
+| # | Detection Criteria | Object Type GUID | Human-Readable Description | Attack Vector |
+|---|---|---|---|---|
+| 6 | `WriteProperty` | `Guid.Empty` (no GUID — all properties) | `"write all properties"` | Modify any attribute — subsumes all specific attribute attacks |
+| 7 | `WriteProperty` | GUID of `servicePrincipalName` attribute | Write SPN | Kerberoasting — set an SPN on a user, then request a service ticket encrypted with the user's password hash |
+| 8 | `WriteProperty` | GUID of `msDS-AllowedToActOnBehalfOfOtherIdentity` attribute | Write RBCD | Resource-Based Constrained Delegation — configure the target to accept delegation from an attacker-controlled account |
+| 9 | `WriteProperty` | GUID of `msDS-KeyCredentialLink` attribute | Write Key Credential Link | Shadow Credentials — add an attacker-controlled key credential, then authenticate as the target via PKINIT |
+| 10 | `WriteProperty` | GUID of `userAccountControl` attribute | Write userAccountControl | Disable Kerberos pre-authentication (AS-REP Roasting), set trusted-for-delegation, or disable the account |
+| 11 | `WriteProperty` | GUID of `scriptPath` attribute | Write logon script path | Code execution — change the user's logon script to an attacker-controlled path |
+| 12 | `WriteProperty` | GUID of `msDS-GroupMSAMembership` attribute | Write gMSA membership | gMSA abuse — add an attacker-controlled principal to the gMSA's retrieval group, then retrieve the gMSA password |
+| 13 | `WriteProperty` | GUID of `member` attribute | Write group membership | Add an attacker-controlled account to the target group |
+| 14 | `WriteProperty` | GUID of `gpLink` attribute | Write GPO link | Link an attacker-controlled GPO to a container, gaining code execution on all objects in scope |
+| 15 | `WriteProperty` | GUID of `gPCFileSysPath` attribute | Write GPO file path | Redirect GPO file path to an attacker-controlled share |
+| 16 | `WriteProperty` | GUID of `msDS-AllowedToDelegateTo` attribute | Write constrained delegation target | Configure constrained delegation to a target service |
+
+**Category C — Dangerous Control Access Rights (identified by `ExtendedRight` flag and control access right GUID):**
+
+| # | Detection Criteria | Control Access Right GUID | Human-Readable Description | Attack Vector |
+|---|---|---|---|---|
+| 17 | `ExtendedRight` | `1131f6aa-9c07-11d1-f79f-00c04fc2dcd2` (DS-Replication-Get-Changes) | Replicate directory changes | Required for DCSync (part 1 of 2) |
+| 18 | `ExtendedRight` | `1131f6ad-9c07-11d1-f79f-00c04fc2dcd2` (DS-Replication-Get-Changes-All) | Replicate directory changes (all) | Required for DCSync (part 2 of 2) — together with #17, enables full credential theft |
+| 19 | `ExtendedRight` | `00299570-246d-11d0-a768-00aa006e0529` (User-Force-Change-Password) | Reset password | Reset any user's password without knowing the current password |
+| 20 | `ExtendedRight` | `Guid.Empty` (no GUID — all extended rights) | All extended rights | Grants every control access right — subsumes DCSync, password reset, and all other extended rights |
+
+**Category D — Dangerous Create/Delete Delegations:**
+
+| # | Detection Criteria | ADeleginator Equivalent | Human-Readable Description |
+|---|---|---|---|
+| 21 | `CreateChild` with `Guid.Empty` | `"create child objects"` | Create any type of child object |
+| 22 | `DeleteChild` with `Guid.Empty` | `"delete child objects"` | Delete any type of child object |
+| 23 | `Delete` | `"delete"` | Delete the object itself |
+| 24 | `DeleteTree` | *(not detected by ADeleginator)* | Delete the object and all its children |
+
+**Category E — Dangerous Validated Writes:**
+
+| # | Detection Criteria | Validated Write GUID | Human-Readable Description | Attack Vector |
+|---|---|---|---|---|
+| 25 | `Self` | GUID of `Validated-SPN` (`f3a64788-5306-11d1-a9c5-0000f80367c1`) | Validated write to SPN | Kerberoasting vector — validated write may bypass SPN validation checks |
+| 26 | `Self` | GUID of `Validated-DNS-Host-Name` (`72e39547-7b18-11d1-adef-00c04fd8d5cd`) | Validated write to DNS host name | Can alter the DNS host name of a computer object |
+| 27 | `Self` | `Guid.Empty` (no GUID — all validated writes) | All validated writes | Grants every validated write |
+
+**Comparison with ADeleginator:** ADeleginator detects 7 delegation types via regex string matching. The revised tool detects 27 delegation types via typed access mask and GUID comparisons. The 20 additional types address well-known attack techniques that ADeleginator entirely misses: DCSync (the single most common AD privilege escalation), Kerberoasting via SPN write, Shadow Credentials via msDS-KeyCredentialLink, Resource-Based Constrained Delegation, gMSA abuse, GPO linking/path manipulation, GenericAll/GenericWrite composites, password reset, and several others.
+
+#### 16.5.2. Object Type GUID Resolution for Dangerous Attribute Detection
+
+The dangerous delegation types in Category B and Category E require comparing the `ActiveDirectoryAccessRule.ObjectType` GUID against specific schema attribute GUIDs and control access right GUIDs. These GUIDs should be resolved during the schema loading phase (Step 2 of the pipeline described in Section 9 of the reference spec):
+
+1. During schema attribute enumeration (`ActiveDirectorySchema.GetCurrentSchema().FindAllProperties()`), build a `Dictionary<Guid, string>` mapping attribute `SchemaGuid` values to `Name` values.
+2. Look up each dangerous attribute by `Name` (e.g., `"servicePrincipalName"`, `"msDS-AllowedToActOnBehalfOfOtherIdentity"`) and retrieve its `SchemaGuid`.
+3. Store the dangerous attribute GUIDs in a `Dictionary<Guid, string>` for O(1) lookup during the scan.
+4. If a dangerous attribute name is not found in the schema (e.g., `msDS-KeyCredentialLink` may not exist in older schema versions), log a warning to stderr and skip that detection rule.
+
+**Implementation in .NET Framework 2.0:** Use `ActiveDirectorySchemaProperty` objects from `ActiveDirectorySchema.GetCurrentSchema().FindAllProperties()`, accessing `.SchemaGuid` for GUID values and `.Name` for `lDAPDisplayName` values. Control access right GUIDs (Category C) are well-known fixed values that do not require schema lookup.
+
+#### 16.5.3. DCSync Compound Detection
+
+DCSync requires **both** `DS-Replication-Get-Changes` and `DS-Replication-Get-Changes-All` extended rights, granted to the same trustee SID, on the domain root object. Neither right alone is sufficient for DCSync (though `DS-Replication-Get-Changes` alone is suspicious). The revised tool should implement compound detection:
+
+1. During the scan, when an `ExtendedRight` ACE with the `DS-Replication-Get-Changes` GUID is found on a domain root object, record the trustee SID and resource.
+2. When an `ExtendedRight` ACE with the `DS-Replication-Get-Changes-All` GUID is found on the same domain root object for the same trustee SID, flag the combination as a `Critical` risk DCSync finding.
+3. Each individual replication right should still be flagged independently (as `High` risk), since they are unusual for non-DC principals and may indicate a partially-configured DCSync delegation.
+
+**Implementation in .NET Framework 2.0:** Use a `Dictionary<string, Dictionary<string, bool>>` keyed by resource DN, then by trustee SID `Value`, tracking which replication rights have been seen. After scanning each domain root object's ACEs, check for the compound condition.
+
+#### 16.5.4. Configurable Dangerous Delegation Definitions
+
+The dangerous delegation type list should be configurable via the XML delegation/template format (see Section 8.1). The XML schema should support:
+
+- Adding custom dangerous delegation types by access mask flags, object type GUID, and control access right GUID
+- Removing default dangerous delegation types (e.g., if an organization legitimately delegates password reset to a help desk and wants to suppress those findings)
+- Specifying custom risk levels for each dangerous delegation type
+
+### 16.6. Risk Classification Rules
+
+ADeleginator uses a binary classification: a delegation either matches the insecure pattern or it does not. The revised tool should use a graduated risk severity model that considers the combination of trustee risk, resource criticality, and delegation danger.
+
+#### 16.6.1. Risk Severity Levels
+
+| Level | Meaning | Action Required |
+|---|---|---|
+| **Critical** | Direct path to domain compromise. Exploitation by any authenticated user (or unauthenticated, for Anonymous Logon) could result in full domain takeover. | Immediate remediation required. |
+| **High** | Significant privilege escalation risk. Exploitation requires compromise of a broadly-scoped account or group, and the target is a Tier 0 resource or the delegation type enables credential theft or persistence. | Remediation strongly recommended. |
+| **Medium** | Elevated risk delegation that does not directly lead to domain compromise but expands the attack surface. Includes dangerous delegation types granted to broadly-scoped trustees on non-Tier-0 objects, or less-dangerous delegations on Tier 0 objects. | Review and remediate as part of delegation hygiene. |
+| **Informational** | Delegation patterns that are atypical or warrant awareness but do not represent a concrete attack path under normal conditions. | Review during periodic security assessments. |
+
+#### 16.6.2. Risk Classification Matrix
+
+The risk level for a given ACE or owner finding is determined by the intersection of three dimensions:
+
+1. **Trustee classification**: Is the trustee in the unsafe trustee set (Section 16.3)?
+2. **Resource classification**: Is the target resource in the Tier 0 set (Section 16.4)?
+3. **Delegation type classification**: Is the delegation type in the dangerous set (Section 16.5), and if so, which category?
+
+The following matrix defines the risk level for each combination:
+
+| Unsafe Trustee? | Tier 0 Resource? | Dangerous Delegation Category | Risk Level |
+|---|---|---|---|
+| Yes | Yes | A (Full-Control) | **Critical** |
+| Yes | Yes | C (DCSync compound — both replication rights) | **Critical** |
+| Yes | Yes | B (Dangerous Write) | **High** |
+| Yes | Yes | C (Single replication right, password reset, or all extended rights) | **High** |
+| Yes | Yes | D (Create/Delete) | **High** |
+| Yes | Yes | E (Dangerous Validated Write) | **High** |
+| Yes | No | A (Full-Control) | **High** |
+| Yes | No | C (DCSync compound on domain root — always Tier 0) | **Critical** |
+| Yes | No | B or C (non-DCSync) | **Medium** |
+| Yes | No | D or E | **Medium** |
+| No | Yes | A, B, or C | **Informational** |
+| No | Yes | D or E | *(no risk tag)* |
+| No | No | Any | *(no risk tag)* |
+
+**Notes:**
+- DCSync compound detection on a domain root object is always `Critical` regardless of the Tier 0 classification of the root object, because domain root objects are inherently Tier 0 (see Section 16.4.1, item #15).
+- Owner findings (Category column = `Owner`) follow the same matrix: if the owner SID is an unsafe trustee and the object is Tier 0, the risk level is `Critical` (for Tier 0) or `High` (for non-Tier-0).
+- Deny ACEs are **not** assigned a risk level, since deny ACEs restrict rather than grant access. This corrects ADeleginator's approach, which only checks for `"Allow"` in the Category field but does not explicitly exclude deny ACEs from risk classification — the revised tool should be explicit about this exclusion.
+- Warning-category rows (unreadable SDs, DACL protection, non-canonical ACLs, deleted trustees) should not receive a risk level, as they represent structural issues rather than delegation risks.
+
+#### 16.6.3. Implementation Approach
+
+During the scan, after each ACE passes the `is_ace_interesting()` filter (or its .NET equivalent), the tool should evaluate the risk classification matrix:
+
+1. **Check trustee**: Look up the ACE's trustee SID in the unsafe trustee `Dictionary<string, string>` (keyed by `SecurityIdentifier.Value`). If found, set `isUnsafeTrustee = true`.
+2. **Check resource**: Look up the current object's DN (or SID, for security principals) in the Tier 0 resource set. If found, set `isTier0Resource = true`.
+3. **Check delegation type**: Evaluate the ACE's `ActiveDirectoryRights` flags and `ObjectType` GUID against the dangerous delegation type definitions (Section 16.5.1). Determine the matching category (A through E) and whether a DCSync compound condition exists.
+4. **Apply the matrix**: Use the three boolean/categorical values to determine the `Risk Level` from the matrix in Section 16.6.2.
+5. **Store the risk level** alongside the ACE data for inclusion in the CSV `Risk Level` column.
+
+This evaluation is O(1) per ACE (dictionary lookups + bitwise flag checks), adding negligible overhead to the scan.
+
+### 16.7. Current User Context Reporting
+
+ADeleginator enriches its analysis with the current user's group memberships, which enables identifying delegations that are directly exploitable by the person running the tool. The revised tool should incorporate this concept with improvements:
+
+#### 16.7.1. Current User SID and Group Resolution
+
+At startup (before the main scan), the tool should:
+
+1. Retrieve the current user's SID via `System.Security.Principal.WindowsIdentity.GetCurrent().User` (returns a `SecurityIdentifier`).
+2. Resolve the current user's transitive group memberships using the `tokenGroups` constructed attribute (see Section 16.3.2).
+3. Add the current user's SID and non-Tier-0 group SIDs to the unsafe trustee set.
+4. Report the current user context to stderr: `Console.Error.WriteLine(String.Format("[Info] Running as: {0} ({1}), member of {2} groups ({3} non-Tier-0)", ntAccount.Value, currentUserSid.Value, totalGroups, nonTier0Groups))`.
+
+**Implementation in .NET Framework 2.0:** `WindowsIdentity.GetCurrent()` is available in `System.Security.Principal`. The `User` property returns a `SecurityIdentifier`. `Translate(typeof(NTAccount))` resolves the display name.
+
+#### 16.7.2. Per-Finding "Exploitable by Current User" Annotation
+
+In addition to the `Risk Level` column, the tool should annotate findings where the trustee is the current user or one of the current user's groups. This can be an additional CSV column:
+
+| Column | Name | Description |
+|---|---|---|
+| 7 | **Current User Can Exploit** | `Yes` if the ACE trustee SID matches the current user's SID or any of the current user's transitive group SIDs; empty (blank) otherwise. |
+
+This column enables the report consumer to immediately identify which findings are exploitable by the person who ran the tool — a direct analog to ADeleginator's user-group-augmented unsafe trustee detection, but more precisely targeted (per-ACE annotation rather than bulk addition to the unsafe trustee list).
+
+### 16.8. Separate Filtered Output Reports
+
+ADeleginator generates two separate CSV files containing only the insecure findings: an insecure trustee delegation report and an insecure resource delegation report. The revised tool should provide equivalent functionality as an optional convenience feature.
+
+#### 16.8.1. CLI Options for Filtered Reports
+
+The revised tool should support the following CLI options:
+
+| Option | Description |
+|---|---|
+| `--risk-csv <path>` | Write a filtered CSV containing only rows with a non-empty `Risk Level` column (i.e., Critical, High, Medium, or Informational findings). The CSV uses the same schema as the main output (including the `Risk Level` and `Current User Can Exploit` columns). |
+| `--risk-level <level>` | Minimum risk level to include in the `--risk-csv` output. One of: `Critical`, `High`, `Medium`, `Informational`. Default: `Medium` (includes Critical, High, and Medium). |
+
+#### 16.8.2. Filtered Report Behavior
+
+- If `--risk-csv` is specified, the filtered report is written **in addition to** the main CSV output (not instead of it). Both outputs are generated from the same scan — no additional AD queries are needed.
+- If `--risk-csv` is specified without `--csv`, the tool should still generate the filtered report. The main unfiltered output can be omitted if `--csv` is not specified (the tool may produce only the risk-filtered output).
+- The filtered report should include a header row and use the same RFC 4180 encoding as the main CSV (see Section 7.4).
+- If no findings meet the risk level threshold, the filtered report should contain only the header row (an empty result is still a valid CSV file). This differs from ADeleginator, which does not create the file if no findings exist — always creating the file simplifies downstream tooling that checks for file existence.
+- The file should be written using `StreamWriter` with `new UTF8Encoding(false)` (see Section 1.5.22).
+
+#### 16.8.3. Comparison with ADeleginator Output
+
+| ADeleginator Behavior | Revised Tool Behavior |
+|---|---|
+| Produces `ADeleg_InsecureTrusteeDelegationReport_<date>.csv` (insecure trustees only) and `ADeleg_InsecureResourceDelegationReport_<date>.csv` (insecure resources only) as two separate files | Produces a single `--risk-csv` file containing all risk-classified findings with the `Risk Level` column indicating severity. Consumers can filter by `Risk Level` to replicate the two-file approach. |
+| Files are not created if no findings exist | File is always created (may contain only the header row) |
+| Filename includes a date stamp (`<ddMMyyyy>`) | Filename is user-specified via `--risk-csv <path>` — the user can include a date stamp if desired |
+| Uses a simplified 5-column schema (`Trustee`, `TrusteeType`, `Resource`, `Category`, `Delegations`) | Uses the full CSV schema (all columns from the main output plus `Risk Level` and `Current User Can Exploit`), providing richer context for each finding |
+
+### 16.9. Console Output for Risk Findings
+
+ADeleginator provides color-coded console messages indicating whether insecure delegations were found. The revised tool should provide equivalent feedback via stderr (to avoid mixing with CSV data on stdout).
+
+#### 16.9.1. Risk Summary Messages
+
+After the scan completes, the tool should print a risk summary to stderr:
+
+```
+[Risk Summary] Critical: {n}, High: {n}, Medium: {n}, Informational: {n}
+```
+
+If any `Critical` or `High` findings exist, an additional alert should be printed:
+
+```
+[!] {n} Critical and {n} High risk delegations found. Review the output for details.
+```
+
+If no findings of any risk level exist:
+
+```
+[+] No insecure delegations detected.
+```
+
+These messages should be emitted via `Console.Error.WriteLine()` to keep stdout clean for CSV data. Color coding is not prescribed (it requires P/Invoke for `SetConsoleTextAttribute` or the use of ANSI escape sequences, which are not universally supported on older Windows consoles), but the `[!]` / `[+]` / `[i]` prefix conventions from ADeleginator should be adopted for consistency.
+
+#### 16.9.2. Per-Naming-Context Risk Counts
+
+During the scan, as each naming context completes, the tool should report the risk findings for that NC:
+
+```
+[i] {ncDN}: {n} objects scanned, {critical} Critical, {high} High, {medium} Medium risk findings
+```
+
+This integrates with the progress reporting prescribed in Section 1.5.23 and Section 9.5.
+
+### 16.10. Improvements Over ADeleginator — Summary of Corrections
+
+The following table summarizes the specific ADeleginator defects and limitations that the revised tool's integrated risk classification corrects:
+
+| ADeleginator Defect/Limitation | Correction in Revised Tool |
+|---|---|
+| **Name-based regex matching** — fragile, locale-dependent, susceptible to false positives from substring matching (e.g., `"delete"` matches `"delete child objects"`) | **SID-based and access-mask-based matching** — language-independent, structurally precise, no regex needed |
+| **Space-join bug** — current user's groups are space-joined into a single never-matching regex alternative | **Eliminated** — groups are added individually to a `Dictionary<string, string>` keyed by SID; no string concatenation involved |
+| **All-or-nothing group append** — if any non-Tier-0 group exists, all groups (including Tier 0) are added as unsafe | **Per-group evaluation** — each group SID is individually checked against the Tier 0 set; only non-Tier-0 SIDs are added to the unsafe trustee set |
+| **Unescaped regex metacharacters** — `"Users (container)"` fails to match due to unescaped parentheses | **Eliminated** — no regex is used; matching is by SID, DN pattern, or object class |
+| **Only 3 baseline unsafe trustees** — misses Anonymous Logon, Pre-Windows 2000 Compatible Access, Domain Computers, Domain Guests | **7 baseline unsafe trustee SIDs** — covers the full set of broadly-scoped well-known principals |
+| **Only 20 Tier 0 resources** — misses Schema/Configuration roots, trust objects, ADCS objects, Key Admins, RODCs | **26+ Tier 0 resources** — covers critical structural objects, ADCS, trusts, and additional privileged groups |
+| **Only 7 dangerous delegation types** — misses DCSync, Kerberoasting, Shadow Credentials, RBCD, GenericAll/GenericWrite, and 13 others | **27 dangerous delegation types** across 5 categories — covers all major AD attack techniques |
+| **Binary risk classification** — insecure or not, no gradation | **Four-level graduated risk severity** — Critical, High, Medium, Informational, based on a three-dimensional matrix |
+| **External wrapper dependency** — requires ADeleg binary as a separate download | **Integrated** — risk classification is performed during the scan using typed data; no external tool needed |
+| **No GPO link resolution** — `"GPO linked to Tier Zero container"` is a name pattern that does not actually resolve GPO links | **Dynamic GPO link resolution** — reads `gpLink` attributes from Tier 0 containers and adds linked GPO DNs to the Tier 0 set |
+| **`memberOf` attribute for group enumeration** — misses nested/transitive group memberships | **`tokenGroups` constructed attribute** — resolves all transitive group memberships via `DirectoryEntry.RefreshCache()` |
+| **No compound detection** — does not detect DCSync (which requires two specific rights granted together) | **DCSync compound detection** — tracks both replication rights per trustee per domain root and flags the compound condition as Critical |
+| **Hardcoded, non-configurable lists** — no user customization without source modification | **XML-configurable lists** — unsafe trustees, Tier 0 resources, and dangerous delegation types are all configurable via the XML delegation/template format |
+| **No per-finding exploitability annotation** — does not indicate which findings the current user can personally exploit | **`Current User Can Exploit` column** — per-row annotation indicating whether the ACE trustee matches the current user's SID or group SIDs |
+| **No deny ACE consideration** — only filters `Category MATCHES "Allow"` | **Explicit deny ACE exclusion** — deny ACEs are explicitly excluded from risk classification (since they restrict access), rather than relying on an implicit "Allow" filter |
+
+### 16.11. Implementation Considerations for .NET Framework 2.0
+
+#### 16.11.1. Data Structures
+
+| Data Structure | Purpose | .NET Framework 2.0 Type |
+|---|---|---|
+| Unsafe trustee SID set | O(1) lookup during scan | `Dictionary<string, bool>` keyed by `SecurityIdentifier.Value` |
+| Tier 0 resource SID set | O(1) lookup for security principals | `Dictionary<string, bool>` keyed by `SecurityIdentifier.Value` |
+| Tier 0 resource DN set | O(1) lookup for structural objects | `Dictionary<string, bool>` keyed by DN (case-insensitive via `StringComparer.OrdinalIgnoreCase` in the constructor) |
+| Dangerous attribute GUIDs | O(1) lookup during ACE evaluation | `Dictionary<Guid, string>` mapping GUID to attack description |
+| Dangerous control access right GUIDs | O(1) lookup during ACE evaluation | `Dictionary<Guid, string>` mapping GUID to attack description |
+| DCSync tracking | Compound detection per trustee per resource | `Dictionary<string, Dictionary<string, int>>` keyed by resource DN, then trustee SID Value, value = bitmask of which replication rights seen |
+| Current user group SIDs | Exploitability annotation | `Dictionary<string, bool>` keyed by `SecurityIdentifier.Value` |
+
+#### 16.11.2. Performance Impact
+
+The risk classification logic adds only dictionary lookups and bitwise flag checks per ACE — all O(1) operations. The primary additional cost is the startup-phase `tokenGroups` resolution (one LDAP query per user) and `gpLink` resolution (one read per Tier 0 container). These are negligible compared to the main subtree scan.
+
+The `--risk-csv` filtered output requires a second pass through the results only if streaming output is used (Section 10.2). If results are accumulated in memory, both the main CSV and the filtered CSV can be written in a single pass.
+
+#### 16.11.3. Integration with Existing Filtering
+
+The risk classification should be applied **after** the existing `is_ace_interesting()` filtering logic. ACEs that are already filtered out (inherited ACEs, schema defaults, AdminSDHolder ACEs, ignored trustee ACEs, read-only ACEs) should not be risk-classified. The risk classification is an additional annotation on ACEs that survive the existing filter — it does not change which ACEs are included or excluded from the output.
+
+This means:
+
+- ACEs for trustees in the existing "ignored trustee" list (SELF, Local System, BUILTIN\Administrators, Domain Admins, etc.) are already excluded from the output and therefore will not be risk-classified. **However**, as noted in Section 6.4, Account Operators, Server Operators, Print Operators, and Backup Operators should be reconsidered for the ignored list — they appear in both the "ignored trustee" list (Section 6 of the reference spec) and the "Tier 0" list (Section 16.4.1 of this document). The revised spec must resolve this conflict: either remove these groups from the ignored trustee list (so their ACEs appear in the output and can be risk-classified), or accept that their ACEs are invisible to risk classification. Removing them from the ignored list is recommended, as these groups are well-known attack vectors.
+- Built-in delegation ACEs that are hidden by default (visible only with `--show-builtin`) should still be risk-classified if `--show-builtin` is enabled. If `--show-builtin` is not enabled, built-in ACEs are excluded from the output and not risk-classified.
+- The `Risk Level` column should be empty (blank) for rows with Category values of `Owner` where the owner is not an unsafe trustee, all `Warning` rows, and all `Deny ACE` rows. It should be populated for `Owner` rows where the owner is an unsafe trustee, all `Allow ACE` rows, and all `Delegation` / `Built-in` / `Expected allow ACE found` rows where the underlying ACE is an Allow ACE with a matching risk profile.
