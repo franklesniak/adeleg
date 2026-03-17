@@ -1189,6 +1189,8 @@ The following table summarizes the specific ADeleginator defects and limitations
 
 #### 16.11.1. Data Structures
 
+**Note on `Dictionary<string, bool>` for set membership:** .NET Framework 2.0 does not include `HashSet<T>` (introduced in .NET 3.5 — see Section 3.2). `Dictionary<string, bool>` with `ContainsKey()` is the standard .NET Framework 2.0 idiom for O(1) set membership checks. The `bool` value is unused (always `true`) — the dictionary is used purely for its key-based lookup performance.
+
 | Data Structure | Purpose | .NET Framework 2.0 Type |
 |---|---|---|
 | Unsafe trustee SID set | O(1) lookup during scan | `Dictionary<string, bool>` keyed by `SecurityIdentifier.Value` |
@@ -1196,7 +1198,7 @@ The following table summarizes the specific ADeleginator defects and limitations
 | Tier 0 resource DN set | O(1) lookup for structural objects | `Dictionary<string, bool>` keyed by DN (case-insensitive via `StringComparer.OrdinalIgnoreCase` in the constructor) |
 | Dangerous attribute GUIDs | O(1) lookup during ACE evaluation | `Dictionary<Guid, string>` mapping GUID to attack description |
 | Dangerous control access right GUIDs | O(1) lookup during ACE evaluation | `Dictionary<Guid, string>` mapping GUID to attack description |
-| DCSync tracking | Compound detection per trustee per resource | `Dictionary<string, Dictionary<string, int>>` keyed by resource DN, then trustee SID Value, value = bitmask of which replication rights seen |
+| DCSync tracking | Compound detection per trustee per resource | `Dictionary<string, Dictionary<string, int>>` keyed by resource DN, then trustee SID Value, value = `int` bitmask where bit 0 (value `1`) = DS-Replication-Get-Changes (`1131f6aa-...`) seen, bit 1 (value `2`) = DS-Replication-Get-Changes-All (`1131f6ad-...`) seen; a value of `3` (both bits set) indicates the DCSync compound condition |
 | Current user group SIDs | Exploitability annotation | `Dictionary<string, bool>` keyed by `SecurityIdentifier.Value` |
 
 #### 16.11.2. Performance Impact
