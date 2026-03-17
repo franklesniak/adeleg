@@ -160,7 +160,7 @@ The spec describes manual byte-level ACE parsing and an explicit `is_inherited()
 | Spec Behavior | .NET Framework 2.0 Replacement |
 |---|---|
 | Parse ACE types byte-by-byte via `GetAce` | `ActiveDirectorySecurity.GetAccessRules()` returns `AuthorizationRuleCollection` of `ActiveDirectoryAccessRule` objects |
-| Check `INHERITED_ACE` flag manually | `GetAccessRules(includeExplicit: true, includeInherited: false, ...)` — pass `false` for `includeInherited` to get only explicit ACEs directly |
+| Check `INHERITED_ACE` flag manually | `GetAccessRules(true, false, typeof(SecurityIdentifier))` — pass `false` for the second parameter (`includeInherited`) to get only explicit ACEs directly |
 | Extract ACE type (Allow/Deny) | `ActiveDirectoryAccessRule.AccessControlType` (enum: `Allow`, `Deny`) |
 | Extract access mask | `ActiveDirectoryAccessRule.ActiveDirectoryRights` (flags enum: `CreateChild`, `DeleteChild`, `WriteProperty`, `ExtendedRight`, `Delete`, `WriteDacl`, `WriteOwner`, etc.) |
 | Extract `object_type` GUID | `ActiveDirectoryAccessRule.ObjectType` (returns `Guid`) |
@@ -208,7 +208,7 @@ The spec's `(objectClass=*)` subtree search is the core scanning operation. Whil
 | Spec Behavior | .NET Framework 2.0 Replacement |
 |---|---|
 | Subtree search with `(objectClass=*)` | `DirectorySearcher.Filter = "(objectClass=*)"`, `.SearchScope = SearchScope.Subtree` |
-| Request specific attributes | `DirectorySearcher.PropertiesToLoad.AddRange(new[] { "nTSecurityDescriptor", "objectClass", "objectSID", "adminCount", "msDS-KrbTgtLinkBl", "serverReference" })` |
+| Request specific attributes | `DirectorySearcher.PropertiesToLoad.AddRange(new string[] { "nTSecurityDescriptor", "objectClass", "objectSID", "adminCount", "msDS-KrbTgtLinkBl", "serverReference" })` |
 | Process results one at a time | `DirectorySearcher.FindAll()` returns `SearchResultCollection`; iterate with `foreach` |
 
 **Impact on the revised spec:** The query logic is the same, but expressed through `DirectorySearcher` properties instead of raw LDAP API calls. The key difference is that `DirectorySearcher.PageSize` handles paging transparently, and `SecurityMasks` replaces the manual SD flags control. The revised spec should describe this scan in terms of `DirectorySearcher` configuration.
@@ -219,20 +219,20 @@ The spec describes mapping raw 32-bit access mask values (hex constants like `0x
 
 | Spec Behavior | .NET Framework 2.0 Replacement |
 |---|---|
-| Check `access_mask & 0x20` for `WRITE_PROP` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.WriteProperty)` |
-| Check `access_mask & 0x100` for `CONTROL_ACCESS` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.ExtendedRight)` |
-| Check `access_mask & 0x1` for `CREATE_CHILD` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.CreateChild)` |
-| Check `access_mask & 0x2` for `DELETE_CHILD` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.DeleteChild)` |
-| Check `access_mask & 0x80000` for `WRITE_OWNER` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.WriteOwner)` |
-| Check `access_mask & 0x40000` for `WRITE_DAC` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.WriteDacl)` |
-| Check `access_mask & 0x10000` for `DELETE` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.Delete)` |
-| Check `access_mask & 0x40` for `DELETE_TREE` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.DeleteTree)` |
-| Check `access_mask & 0x8` for `DS_SELF` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.Self)` |
-| Check `access_mask & 0x1000000` for `ACCESS_SYSTEM_SECURITY` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.AccessSystemSecurity)` |
+| Check `access_mask & 0x20` for `WRITE_PROP` | `(rule.ActiveDirectoryRights & ActiveDirectoryRights.WriteProperty) != 0` |
+| Check `access_mask & 0x100` for `CONTROL_ACCESS` | `(rule.ActiveDirectoryRights & ActiveDirectoryRights.ExtendedRight) != 0` |
+| Check `access_mask & 0x1` for `CREATE_CHILD` | `(rule.ActiveDirectoryRights & ActiveDirectoryRights.CreateChild) != 0` |
+| Check `access_mask & 0x2` for `DELETE_CHILD` | `(rule.ActiveDirectoryRights & ActiveDirectoryRights.DeleteChild) != 0` |
+| Check `access_mask & 0x80000` for `WRITE_OWNER` | `(rule.ActiveDirectoryRights & ActiveDirectoryRights.WriteOwner) != 0` |
+| Check `access_mask & 0x40000` for `WRITE_DAC` | `(rule.ActiveDirectoryRights & ActiveDirectoryRights.WriteDacl) != 0` |
+| Check `access_mask & 0x10000` for `DELETE` | `(rule.ActiveDirectoryRights & ActiveDirectoryRights.Delete) != 0` |
+| Check `access_mask & 0x40` for `DELETE_TREE` | `(rule.ActiveDirectoryRights & ActiveDirectoryRights.DeleteTree) != 0` |
+| Check `access_mask & 0x8` for `DS_SELF` | `(rule.ActiveDirectoryRights & ActiveDirectoryRights.Self) != 0` |
+| Check `access_mask & 0x1000000` for `ACCESS_SYSTEM_SECURITY` | `(rule.ActiveDirectoryRights & ActiveDirectoryRights.AccessSystemSecurity) != 0` |
 | Mask out read-only rights via `access_mask & ~IGNORED_RIGHTS` | Check `ActiveDirectoryRights.ReadProperty`, `ActiveDirectoryRights.ListChildren`, `ActiveDirectoryRights.ReadControl`, `ActiveDirectoryRights.ListObject` individually |
-| Combine multiple rights as raw OR'd bitmask | `ActiveDirectoryRights` is a `[Flags]` enum — use `HasFlag()`, bitwise AND/OR, and `ToString()` for symbolic names |
+| Combine multiple rights as raw OR'd bitmask | `ActiveDirectoryRights` is a `[Flags]` enum — use bitwise AND/OR and `ToString()` for symbolic names. On .NET Framework 4.0+, `Enum.HasFlag()` can be used as a convenience alternative to bitwise checks |
 
-**Impact on the revised spec:** The access mask mapping table in the spec (§8) should be rewritten in terms of `ActiveDirectoryRights` enum values instead of hex constants. The "ignored (read-only) access rights" set should be defined using enum values: `ActiveDirectoryRights.ReadProperty | ActiveDirectoryRights.ListChildren | ActiveDirectoryRights.ReadControl | ActiveDirectoryRights.ListObject`. The `--show-raw` mode can use `((int)rule.ActiveDirectoryRights).ToString("X8")` to display hex values and `rule.ActiveDirectoryRights.ToString()` for symbolic names — eliminating the need for a manual bitmask-to-name mapping table.
+**Impact on the revised spec:** The access mask mapping table in the spec (§8) should be rewritten in terms of `ActiveDirectoryRights` enum values instead of hex constants. Flag checks should use bitwise operations — e.g., `(rights & ActiveDirectoryRights.WriteProperty) != 0` — which work on all .NET Framework versions. On .NET Framework 4.0 or newer, `Enum.HasFlag()` (e.g., `rights.HasFlag(ActiveDirectoryRights.WriteProperty)`) can be used as a more readable alternative, but this method is not available on .NET Framework 2.0–3.x. The "ignored (read-only) access rights" set should be defined using enum values: `ActiveDirectoryRights.ReadProperty | ActiveDirectoryRights.ListChildren | ActiveDirectoryRights.ReadControl | ActiveDirectoryRights.ListObject`. The `--show-raw` mode can use `((int)rule.ActiveDirectoryRights).ToString("X8")` to display hex values and `rule.ActiveDirectoryRights.ToString()` for symbolic names — eliminating the need for a manual bitmask-to-name mapping table.
 
 #### 1.5.17. ACL Canonicality Check (Replaces Part of Spec §12)
 
@@ -332,7 +332,7 @@ The current spec has no progress reporting. For a console tool scanning large fo
 | Schema class/attribute enumeration | ✅ Yes | `ActiveDirectorySchema.FindAllClasses()` / `FindAllProperties()` |
 | RootDSE bootstrap | ✅ Yes | `DirectoryEntry("LDAP://RootDSE")` |
 | Connection timeouts | ✅ Yes | `DirectorySearcher.ClientTimeout`, `DirectoryEntry.Options` |
-| Access mask interpretation | ✅ Yes | `ActiveDirectoryRights` flags enum with `HasFlag()`, `ToString()` |
+| Access mask interpretation | ✅ Yes | `ActiveDirectoryRights` flags enum with bitwise checks (or `Enum.HasFlag()` on .NET 4.0+), `ToString()` |
 | ACL canonicality check | ✅ Yes | `CommonAcl.IsCanonical` for detection; manual iteration for specific ACE identification |
 | DACL inheritance protection | ✅ Yes | `ActiveDirectorySecurity.AreAccessRulesProtected` |
 | Domain SID prefix matching | ✅ Yes | `SecurityIdentifier.AccountDomainSid` for domain-portion extraction and comparison |
