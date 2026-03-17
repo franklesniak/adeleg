@@ -1,6 +1,6 @@
 # Specification Criticism — `specifications-reference.md`
 
-This document provides functional and technical criticism of the specification defined in `docs/specifications-reference.md`. The criticism is written from the perspective of producing a revised specification that will be used to write a net-new, from-scratch tool in **.NET 2.0** (for intentional backward compatibility), running exclusively from the **console** with output to **CSV or similar text files** (no graphical user interface).
+This document provides functional and technical criticism of the specification defined in `docs/specifications-reference.md`. The criticism is written from the perspective of producing a revised specification that will be used to write a net-new, from-scratch tool in **.NET Framework 2.0** (for intentional backward compatibility), running exclusively from the **console** with output to **CSV or similar text files** (no graphical user interface).
 
 ---
 
@@ -8,7 +8,7 @@ This document provides functional and technical criticism of the specification d
 
 1. [Platform and Technology Coupling](#1-platform-and-technology-coupling)
 2. [LDAP Access Layer](#2-ldap-access-layer)
-3. [.NET 2.0 Constraints and Implications](#3-net-20-constraints-and-implications)
+3. [.NET Framework 2.0 Constraints and Implications](#3-net-framework-20-constraints-and-implications)
 4. [Security Descriptor Parsing](#4-security-descriptor-parsing)
 5. [SID Resolution Strategy](#5-sid-resolution-strategy)
 6. [Filtering Logic Concerns](#6-filtering-logic-concerns)
@@ -32,19 +32,35 @@ The specification repeatedly references Rust-specific constructs (e.g., `RefCell
 
 ### 1.2. Windows LDAP C API Specifics
 
-The spec lists specific C API functions (`ldap_initW`, `ldap_connect`, `ldap_bind_sW`, `ldap_search_ext_sW`, `ldap_create_page_controlW`, `ldap_parse_page_controlW`) from `wldap32.dll`. While .NET 2.0 can P/Invoke these, it would be far more natural (and less error-prone) to use `System.DirectoryServices` (`DirectoryEntry`, `DirectorySearcher`) or `System.DirectoryServices.Protocols` (`LdapConnection`, `SearchRequest`). The revised spec should define required behaviors (e.g., "perform a paged subtree search," "bind with Negotiate authentication") without mandating a specific API surface.
+The spec lists specific C API functions (`ldap_initW`, `ldap_connect`, `ldap_bind_sW`, `ldap_search_ext_sW`, `ldap_create_page_controlW`, `ldap_parse_page_controlW`) from `wldap32.dll`. While .NET Framework 2.0 can P/Invoke these, it would be far more natural (and less error-prone) to use `System.DirectoryServices` (`DirectoryEntry`, `DirectorySearcher`) or `System.DirectoryServices.Protocols` (`LdapConnection`, `SearchRequest`). The revised spec should define required behaviors (e.g., "perform a paged subtree search," "bind with Negotiate authentication") without mandating a specific API surface.
 
 ### 1.3. Embedded Compile-Time Resources
 
-The spec refers to `builtin_delegations.json` being "embedded at compile time." In .NET 2.0, the equivalent mechanism would be an embedded resource or an external file distributed alongside the executable. The revised spec should describe the logical requirement (a set of built-in delegation definitions shipped with the tool) without prescribing the delivery mechanism.
+The spec refers to `builtin_delegations.json` being "embedded at compile time." In .NET Framework 2.0, the equivalent mechanism would be an embedded resource or an external file distributed alongside the executable. The revised spec should describe the logical requirement (a set of built-in delegation definitions shipped with the tool) without prescribing the delivery mechanism.
 
 ### 1.4. Dynamic Library Loading
 
-The spec mentions dynamically loading `LookupAccountSidLocalW` from `sechost.dll` via `GetProcAddress`. In .NET 2.0, `System.Security.Principal.SecurityIdentifier.Translate()` or P/Invoke with `LookupAccountSid` would be more natural. The revised spec should describe the SID-to-name resolution requirement without mandating a specific OS API call mechanism.
+The spec mentions dynamically loading `LookupAccountSidLocalW` from `sechost.dll` via `GetProcAddress`. In .NET Framework 2.0, `System.Security.Principal.SecurityIdentifier.Translate()` or P/Invoke with `LookupAccountSid` would be more natural. The revised spec should describe the SID-to-name resolution requirement without mandating a specific OS API call mechanism.
+
+### 1.5. .NET Framework Native AD Objects Could Eliminate Granular LDAP Control
+
+The spec describes Active Directory access exclusively through low-level LDAP operations: explicit connection handles, bind calls, paged search controls, referral option flags, SD flags controls, port numbers, and timeout values. If the .NET Framework rewrite uses `System.DirectoryServices` (`DirectoryEntry`, `DirectorySearcher`) or `System.DirectoryServices.ActiveDirectory` (`Domain`, `Forest`, `ActiveDirectorySchema`), many of these LDAP-level concerns are abstracted away entirely by the framework:
+
+- **DC discovery and connection**: `Domain.GetCurrentDomain()` and `Forest.GetCurrentForest()` locate domain controllers automatically, eliminating the need for `--server` and `--port` CLI options in most cases.
+- **Paging**: `DirectorySearcher.PageSize` handles paged searches transparently — there is no need to manually create page controls or parse cookies.
+- **Referrals**: `DirectorySearcher.ReferralChasing` provides a simple enum-based configuration rather than raw `ldap_set_option` calls.
+- **Authentication**: `DirectoryEntry` constructors accept credentials and automatically use Negotiate/SSPI when none are provided, removing the need for `SEC_WINNT_AUTH_IDENTITY_W` structures.
+- **Security descriptors**: `DirectoryEntry.ObjectSecurity` returns an `ActiveDirectorySecurity` object with managed ACE access via `GetAccessRules()`, eliminating raw binary parsing.
+- **SD flags control**: `DirectorySearcher.SecurityMasks` provides a managed interface for specifying which SD components to retrieve (Owner, DACL, SACL, Group).
+- **Timeouts**: `DirectorySearcher.ClientTimeout` and `DirectorySearcher.ServerTimeLimit` replace raw `LDAP_TIMEVAL` structs.
+
+The revised spec should seriously consider specifying behaviors at this higher abstraction level rather than at the LDAP protocol level. This would make the spec simpler, more naturally aligned with .NET Framework, and would avoid overspecifying implementation mechanics that the framework already handles. The remaining LDAP-level sections of this criticism (Section 2) may become partially or wholly moot if this approach is adopted.
 
 ---
 
 ## 2. LDAP Access Layer
+
+> **Note:** As discussed in Section 1.5, many of these LDAP-level concerns may be rendered moot if the revised spec adopts .NET Framework native AD objects (`System.DirectoryServices`) instead of specifying raw LDAP operations. The criticisms below remain relevant if the spec retains LDAP-level granularity, or as fallback considerations for edge cases that .NET Framework abstractions may not cover.
 
 ### 2.1. Connection Timeout Semantics Are Unclear
 
@@ -52,7 +68,7 @@ The spec states a 2-second `LDAP_TIMEVAL` for `ldap_connect`, but then immediate
 
 ### 2.2. Referral Disabling Rationale is Good but Incomplete
 
-The spec correctly disables referrals to prevent hanging when running outside the domain, but does not discuss the implications: disabling referrals means the tool will not follow cross-domain references within the same forest. If a naming context references objects in another domain, those references will simply fail silently. The revised spec should explicitly state whether cross-domain references within a forest should be followed (and if so, how to handle authentication for them) or whether failing silently is acceptable.
+The spec correctly disables referrals to prevent hanging when running outside the domain, but does not discuss the implications: disabling referrals means the tool will not automatically follow cross-domain references within the same forest. If a naming context references objects in another domain, those objects will not be resolved — the LDAP client will receive referral responses that go unfollowed, which depending on the API layer may surface as errors or simply as missing results. The revised spec should explicitly state whether cross-domain references within a forest should be followed (and if so, how to handle authentication for them), or whether unfollowed referrals are acceptable and how they should be reported.
 
 ### 2.3. Page Size of 999 Should Be Justified or Configurable
 
@@ -62,39 +78,39 @@ The page size of 999 is stated as a fixed constant without justification. The de
 
 The spec does not mention encrypted LDAP connections (LDAPS on port 636 or StartTLS). While Negotiate/SPNEGO provides signing and sealing by default, in environments that require channel binding or TLS-only policies, this could be a limitation. The revised spec should explicitly state whether encrypted transport is supported and, if so, how (port selection, certificate validation, etc.).
 
-### 2.5. Hardcoded Port 389
+### 2.5. No Specification for Connection Endpoints or Alternative Ports
 
-The spec mentions a default port of 389 with a `--port` option, but does not discuss LDAPS (port 636) or Global Catalog (ports 3268/3269). The revised spec should clarify whether these alternative ports are supported and what protocol differences they imply (e.g., Global Catalog returns partial attribute sets).
+The spec does not document how the LDAP connection endpoint is determined — it does not specify a default port, CLI options for overriding the port, or support for LDAPS (port 636) or Global Catalog (ports 3268/3269). The existing implementation supports `--port` (defaulting to 389), but this is not captured in the spec. The revised spec should clarify what connection endpoints are supported and what protocol differences alternative ports imply (e.g., Global Catalog returns partial attribute sets). However, see Section 1.5 — if the revised spec uses .NET Framework native AD objects, port selection and protocol handling may be abstracted away entirely.
 
 ---
 
-## 3. .NET 2.0 Constraints and Implications
+## 3. .NET Framework 2.0 Constraints and Implications
 
 ### 3.1. No LINQ
 
-.NET 2.0 predates LINQ (introduced in .NET 3.5). Any spec behaviors described in terms of filtering, projection, or aggregation over collections must be implementable with explicit `for`/`foreach` loops and manual collection manipulation. This is not a spec deficiency per se, but the revised spec should avoid describing behaviors in a way that implicitly assumes functional-style collection processing (e.g., "filter the DACL ACEs through `is_ace_interesting()`" is fine since it describes a filter predicate, but more complex pipeline descriptions should be broken into discrete steps).
+.NET Framework 2.0 predates LINQ (introduced in .NET 3.5). Any spec behaviors described in terms of filtering, projection, or aggregation over collections must be implementable with explicit `for`/`foreach` loops and manual collection manipulation. This is not a spec deficiency per se, but the revised spec should avoid describing behaviors in a way that implicitly assumes functional-style collection processing (e.g., "filter the DACL ACEs through `is_ace_interesting()`" is fine since it describes a filter predicate, but more complex pipeline descriptions should be broken into discrete steps).
 
 ### 3.2. Limited Generic Collections
 
-.NET 2.0 has `Dictionary<TKey, TValue>`, `List<T>`, and `Queue<T>`, but lacks `HashSet<T>` (introduced in .NET 3.5), `ConcurrentDictionary` (introduced in .NET 4.0), and other modern collections. The spec's use of `HashMap` and set-based operations should be described in terms of behavior, not data structure. For example, the SID resolution cache could be described as "a key-value mapping from SID to resolved name" rather than mandating a specific collection type.
+.NET Framework 2.0 has `Dictionary<TKey, TValue>`, `List<T>`, and `Queue<T>`, but lacks `HashSet<T>` (introduced in .NET 3.5), `ConcurrentDictionary` (introduced in .NET 4.0), and other modern collections. The spec's use of `HashMap` and set-based operations should be described in terms of behavior, not data structure. For example, the SID resolution cache could be described as "a key-value mapping from SID to resolved name" rather than mandating a specific collection type.
 
 ### 3.3. No Async/Await
 
-.NET 2.0 has no `async`/`await` support. All operations will be synchronous, which is actually consistent with the current spec (it describes single-threaded, synchronous processing). However, if a future revision considers parallelization (which the current spec lists as a limitation), the .NET 2.0 constraint makes this significantly harder, requiring manual threading with `System.Threading.Thread` or `ThreadPool`.
+.NET Framework 2.0 has no `async`/`await` support. All operations will be synchronous, which is actually consistent with the current spec (it describes single-threaded, synchronous processing). However, if a future revision considers parallelization (which the current spec lists as a limitation), the .NET Framework 2.0 constraint makes this significantly harder, requiring manual threading with `System.Threading.Thread` or `ThreadPool`.
 
 ### 3.4. String Handling
 
-.NET 2.0 has `StringBuilder` but lacks `string.IsNullOrWhiteSpace()` (introduced in .NET 4.0) and other modern string utilities. The spec should not rely on specific string manipulation APIs, but rather describe the string-processing requirements clearly enough that they can be implemented with basic string operations.
+.NET Framework 2.0 has `StringBuilder` but lacks `string.IsNullOrWhiteSpace()` (introduced in .NET 4.0) and other modern string utilities. The spec should not rely on specific string manipulation APIs, but rather describe the string-processing requirements clearly enough that they can be implemented with basic string operations.
 
 ### 3.5. Security Descriptor API Availability
 
-.NET 2.0 includes `System.Security.AccessControl` and `System.DirectoryServices`, which provide managed access to security descriptors. However, the class `ActiveDirectorySecurity` and its `GetAccessRules()` method are available in .NET 2.0, making managed SD parsing possible without P/Invoke. The revised spec should describe the parsing requirements in terms of what information is needed (owner, DACL, individual ACEs with their types, flags, access masks, and object GUIDs) without mandating raw binary parsing via Windows API calls.
+.NET Framework 2.0 includes `System.Security.AccessControl` and `System.DirectoryServices`, which provide managed access to security descriptors. However, the class `ActiveDirectorySecurity` and its `GetAccessRules()` method are available in .NET Framework 2.0, making managed SD parsing possible without P/Invoke. The revised spec should describe the parsing requirements in terms of what information is needed (owner, DACL, individual ACEs with their types, flags, access masks, and object GUIDs) without mandating raw binary parsing via Windows API calls.
 
 ### 3.6. JSON Parsing
 
-.NET 2.0 does not include a built-in JSON parser. `System.Text.Json` arrived in .NET Core 3.0. `System.Web.Script.Serialization.JavaScriptSerializer` is only available when referencing `System.Web.Extensions`, which was part of ASP.NET AJAX Extensions and may not be present in all .NET 2.0 installations.
+.NET Framework 2.0 does not include a built-in JSON parser. `System.Text.Json` arrived in .NET Core 3.0. `System.Web.Script.Serialization.JavaScriptSerializer` is only available when referencing `System.Web.Extensions`, which was part of ASP.NET AJAX Extensions and may not be present in all .NET Framework 2.0 installations.
 
-The revised spec should address this as a design decision. Options include: specifying a JSON format simple enough for a hand-written parser, using XML instead (natively supported in .NET 2.0 via `System.Xml`), or explicitly requiring a third-party JSON library (e.g., Newtonsoft.Json, whose early versions supported .NET 2.0).
+The revised spec should address this as a design decision. Options include: specifying a JSON format simple enough for a hand-written parser, using XML instead (natively supported in .NET Framework 2.0 via `System.Xml`), or explicitly requiring a third-party JSON library (e.g., Newtonsoft.Json, whose early versions supported .NET Framework 2.0).
 
 ---
 
@@ -102,11 +118,11 @@ The revised spec should address this as a design decision. Options include: spec
 
 ### 4.1. Binary Parsing vs. Managed API
 
-The spec describes parsing security descriptors from raw binary blobs using Windows API calls (`IsValidSecurityDescriptor`, `GetSecurityDescriptorControl`, `GetSecurityDescriptorOwner`, `GetSecurityDescriptorDacl`, etc.) and parsing ACEs byte-by-byte with `GetAce`. In .NET 2.0, `System.DirectoryServices` returns security descriptors as `ActiveDirectorySecurity` objects (a subclass of `ObjectSecurity`) which provide managed access to ACEs through `GetAccessRules()` and `GetAuditRules()`. Using these managed APIs would be safer and more idiomatic. The revised spec should describe the information to extract without mandating low-level binary parsing.
+The spec describes parsing security descriptors from raw binary blobs using Windows API calls (`IsValidSecurityDescriptor`, `GetSecurityDescriptorControl`, `GetSecurityDescriptorOwner`, `GetSecurityDescriptorDacl`, etc.) and parsing ACEs byte-by-byte with `GetAce`. In .NET Framework 2.0, `System.DirectoryServices` returns security descriptors as `ActiveDirectorySecurity` objects (a subclass of `ObjectSecurity`) which provide managed access to ACEs through `GetAccessRules()` and `GetAuditRules()`. Using these managed APIs would be safer and more idiomatic. The revised spec should describe the information to extract without mandating low-level binary parsing.
 
 ### 4.2. SDDL Parsing for Schema Defaults
 
-The spec mentions parsing SDDL strings from schema `defaultSecurityDescriptor` attributes using `ConvertStringSecurityDescriptorToSecurityDescriptorW`. In .NET 2.0, the `RawSecurityDescriptor` class (in `System.Security.AccessControl`) can parse SDDL strings via its constructor `RawSecurityDescriptor(string)`. The revised spec should describe the requirement (parse SDDL strings into structured security descriptors) without mandating a specific API.
+The spec mentions parsing SDDL strings from schema `defaultSecurityDescriptor` attributes using `ConvertStringSecurityDescriptorToSecurityDescriptorW`. In .NET Framework 2.0, the `RawSecurityDescriptor` class (in `System.Security.AccessControl`) can parse SDDL strings via its constructor `RawSecurityDescriptor(string)`. The revised spec should describe the requirement (parse SDDL strings into structured security descriptors) without mandating a specific API.
 
 ### 4.3. Callback ACE Handling is Underspecified
 
@@ -134,7 +150,7 @@ The cache should have simple "first write wins" or "last write wins" semantics, 
 
 ### 5.2. `LookupAccountSidLocalW` May Not Be Available in All Contexts
 
-The spec relies on `LookupAccountSidLocalW` for resolving well-known SIDs. In .NET 2.0, the equivalent is `SecurityIdentifier.Translate(typeof(NTAccount))`. However, this may fail in cross-forest or workgroup scenarios. The revised spec should define the expected behavior when local SID resolution is unavailable (e.g., when running the tool on a non-domain-joined machine or in a cross-forest context).
+The spec relies on `LookupAccountSidLocalW` for resolving well-known SIDs. In .NET Framework 2.0, the equivalent is `SecurityIdentifier.Translate(typeof(NTAccount))`. However, this may fail in cross-forest or workgroup scenarios. The revised spec should define the expected behavior when local SID resolution is unavailable (e.g., when running the tool on a non-domain-joined machine or in a cross-forest context).
 
 ### 5.3. Cache Field Name is Misleading
 
@@ -203,9 +219,9 @@ The 5-column CSV schema (Resource, Trustee, Trustee type, Category, Details) pac
 
 The spec does not explicitly state whether the CSV includes a header row. RFC 4180 allows but does not require a header. The revised spec should mandate a header row for usability.
 
-### 7.4. .NET 2.0 CSV Writing
+### 7.4. .NET Framework 2.0 CSV Writing
 
-.NET 2.0 does not have a built-in CSV library. The spec references the Rust `csv` crate for RFC 4180 compliance. The revised spec should either require RFC 4180 compliance (which can be achieved with a simple manual implementation in .NET 2.0 — proper quoting of fields containing commas, double-quotes, and newlines) or specify a simpler escaping convention. Given that DNs can contain commas, proper CSV quoting is essential.
+.NET Framework 2.0 does not have a built-in CSV library. The spec references the Rust `csv` crate for RFC 4180 compliance. The revised spec should either require RFC 4180 compliance (which can be achieved with a simple manual implementation in .NET Framework 2.0 — proper quoting of fields containing commas, double-quotes, and newlines) or specify a simpler escaping convention. Given that DNs can contain commas, proper CSV quoting is essential.
 
 ### 7.5. UTF-8 Encoding With or Without BOM
 
@@ -223,11 +239,11 @@ The spec mentions that `--csv -` writes CSV to stdout. However, the tool also wr
 
 ## 8. Delegation and Template System
 
-### 8.1. JSON Format is Problematic for .NET 2.0
+### 8.1. JSON Format is Problematic for .NET Framework 2.0
 
-As noted in Section 3.6, .NET 2.0 lacks native JSON support. The current delegation and template format uses JSON. The revised spec should either:
+As noted in Section 3.6, .NET Framework 2.0 lacks native JSON support. The current delegation and template format uses JSON. The revised spec should either:
 
-- Adopt XML format (natively supported in .NET 2.0 via `System.Xml`)
+- Adopt XML format (natively supported in .NET Framework 2.0 via `System.Xml`)
 - Explicitly require a specific JSON library and version
 - Define a simpler text-based format (e.g., INI-style, CSV-based)
 
@@ -296,7 +312,7 @@ The spec states that every object in every naming context is queried with `(obje
 
 ### 10.2. Memory Consumption is Not Bounded
 
-While the spec mentions pruning records with no findings, it does not define a memory budget or describe behavior when memory is exhausted. In .NET 2.0, the default process memory limit is lower than in modern frameworks. The revised spec should consider streaming output (writing CSV records as they are produced) rather than accumulating all results in memory.
+While the spec mentions pruning records with no findings, it does not define a memory budget or describe behavior when memory is exhausted. In .NET Framework 2.0, the default process memory limit is lower than in modern frameworks. The revised spec should consider streaming output (writing CSV records as they are produced) rather than accumulating all results in memory.
 
 ### 10.3. SID Resolution Cache Could Grow Unbounded
 
@@ -323,13 +339,14 @@ The spec focuses exclusively on CSV export. Since the new tool will have no GUI,
 
 The spec describes `--show-raw` behavior for CSV output (raw constant names and hex values) but does not clearly define how raw mode affects console text output. The revised spec should define both outputs.
 
-### 11.3. LDAP Server Discovery is Underspecified
+### 11.3. LDAP Server/Domain Controller Discovery is Not Specified
 
-The spec mentions `--server` for explicit server specification but does not describe the automatic DC discovery mechanism (which the existing tool uses). The revised spec should define:
+The spec does not document how the tool determines which domain controller to connect to. The existing implementation supports a `--server` CLI option and has automatic DC discovery logic, but neither behavior is captured in the spec. The revised spec should define:
 
-- How the tool discovers a domain controller when `--server` is not specified (DNS SRV records? LDAP ping? `DsGetDcName`?)
+- How the tool discovers a domain controller when no explicit server is specified (e.g., via .NET Framework's `System.DirectoryServices.ActiveDirectory.Domain.GetCurrentDomain()`, DNS SRV records, or `DsGetDcName`)
 - What happens when discovery fails
 - Whether the tool should support connecting to a specific site's DC
+- Whether explicit server specification should even be needed if .NET Framework native AD objects handle DC location automatically (see Section 1.5)
 
 ### 11.4. No Specification for Encoding of DN Strings
 
@@ -393,7 +410,7 @@ The spec scans everything in every naming context. For large environments, admin
 
 ### 13.5. Credential Handling UX
 
-The spec mentions `--password *` for interactive password entry and `--password <value>` for command-line password. For .NET 2.0, `Console.ReadKey(true)` can implement secure password entry. The revised spec should also consider reading credentials from environment variables or a configuration file (with appropriate security warnings) as alternatives to command-line arguments.
+The spec mentions `--password *` for interactive password entry and `--password <value>` for command-line password. For .NET Framework 2.0, `Console.ReadKey(true)` can implement secure password entry. The revised spec should also consider reading credentials from environment variables or a configuration file (with appropriate security warnings) as alternatives to command-line arguments.
 
 ---
 
@@ -405,7 +422,7 @@ The spec correctly warns about `--password` leaking credentials via process list
 
 ### 14.2. No Certificate Validation for LDAPS
 
-If LDAPS support is added (see Section 2.4), the spec should define certificate validation behavior. In .NET 2.0, the `ServicePointManager.ServerCertificateValidationCallback` can be used for custom validation, but the default behavior and any override options should be specified.
+If LDAPS support is added (see Section 2.4), the spec should define certificate validation behavior. In .NET Framework 2.0, the `ServicePointManager.ServerCertificateValidationCallback` can be used for custom validation, but the default behavior and any override options should be specified.
 
 ### 14.3. No Audit Trail of Tool Execution
 
@@ -435,11 +452,11 @@ As noted in Section 6.1, this is not strictly true. The revised spec should docu
 
 The existing tool has a GUI that provides interactive exploration of results. With the GUI removed, the console output and CSV become the only interfaces. The revised spec should consider whether additional output modes (e.g., HTML report, interactive console mode with filtering/searching) are needed to compensate for the loss of the GUI's interactive capabilities.
 
-### 15.5. .NET 2.0 Backward Compatibility Goal Should Be Justified
+### 15.5. .NET Framework 2.0 Backward Compatibility Goal Should Be Justified
 
-The choice of .NET 2.0 deserves a clear justification in the revised spec. .NET 2.0 is end-of-life and lacks modern security patches. While backward compatibility with older Windows versions (Windows Server 2003/2008?) may be the motivation, the revised spec should explicitly state:
+The choice of .NET Framework 2.0 deserves a clear justification in the revised spec. .NET Framework 2.0 is end-of-life and lacks modern security patches. While backward compatibility with older Windows versions (Windows Server 2003/2008?) may be the motivation, the revised spec should explicitly state:
 
 - Which minimum Windows versions are targeted
-- Whether .NET 2.0 is chosen because it's pre-installed on those versions
-- What trade-offs are accepted by choosing .NET 2.0 (no modern TLS defaults, no LINQ, limited async, etc.)
+- Whether .NET Framework 2.0 is chosen because it's pre-installed on those versions
+- What trade-offs are accepted by choosing .NET Framework 2.0 (no modern TLS defaults, no LINQ, limited async, etc.)
 - Whether .NET 4.0 or .NET Standard 2.0 would be acceptable alternatives that provide better APIs while still supporting reasonably old Windows versions
