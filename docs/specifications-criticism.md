@@ -58,7 +58,7 @@ The spec's `ldap_initW(serverName, port)` and `ldap_connect` calls are entirely 
 | Auto-discover a DC for the current domain | `Domain.GetCurrentDomain()` returns a `Domain` object with an auto-selected DC; `Domain.FindDomainController()` for explicit DC selection |
 | Auto-discover forest-level topology | `Forest.GetCurrentForest()` returns the forest with all domains, sites, and global catalogs |
 | Specify a port number | Encoded in the LDAP path: `"LDAP://serverName:636"` for LDAPS, or `"GC://serverName"` for Global Catalog |
-| Connection timeout | `DirectorySearcher.ClientTimeout` and `DirectoryEntry.Options.Timeout` (`DirectoryEntryConfiguration`) |
+| Connection timeout | `DirectorySearcher.ClientTimeout` (maximum time the client waits for results) and `DirectorySearcher.ServerTimeLimit` (maximum time the server spends on a query) |
 
 **Impact on the revised spec:** The `--server` and `--port` CLI options may be unnecessary for most use cases. The spec should define the tool's DC selection behavior in terms of `Domain.GetCurrentDomain()` / `Forest.GetCurrentForest()`, with an optional override for explicit server targeting. The 2-second `LDAP_TIMEVAL` concern (Spec §2) and DNS/mDNS/NBNS timeout caveat disappear — .NET Framework handles the underlying resolution internally.
 
@@ -285,7 +285,7 @@ The spec uses JSON for delegation and template definitions (`builtin_delegations
 | Parse JSON delegation files | `System.Xml.XmlDocument.Load(path)` — load XML delegation files with `SelectNodes()` for XPath queries |
 | Embed built-in delegations as a compiled resource | Embed as an XML resource (`Assembly.GetManifestResourceStream()`) and parse with `XmlDocument` |
 | Parse template files | `System.Xml.Serialization.XmlSerializer` — deserialize template definitions directly into typed objects |
-| JSON schema validation | XML Schema (XSD) validation via `XmlReaderSettings.Schemas` — provides formal schema validation that JSON lacks |
+| JSON schema validation | XML Schema (XSD) validation via `XmlReaderSettings.Schemas` — natively available in .NET Framework 2.0 without third-party libraries. Note: JSON does have formal schema validation (JSON Schema / IETF RFC draft), but .NET Framework 2.0 has no built-in JSON Schema validator. On .NET Framework 4.5+ or modern .NET (5+), `System.Text.Json` or third-party libraries like `Newtonsoft.Json.Schema` make JSON Schema validation feasible if a future version targets those frameworks. |
 
 **Impact on the revised spec:** The revised spec should define the delegation and template format as XML rather than JSON. XML provides several advantages in .NET Framework 2.0: native parsing (`XmlDocument`, `XmlReader`), native serialization (`XmlSerializer`), formal schema validation (XSD), and XPath query support. The revised spec should define the XML schema for delegation and template files, including element names, attribute types, and validation rules. The `access_mask` values in delegation definitions should use symbolic `ActiveDirectoryRights` enum names (e.g., `WriteProperty`, `ExtendedRight`) rather than raw numeric values, resolved at load time via `Enum.Parse(typeof(ActiveDirectoryRights), name)`.
 
@@ -354,7 +354,7 @@ The current spec has no progress reporting. For a console tool scanning large fo
 
 ### 2.1. Connection Timeout Semantics Are Unclear (Largely Moot with .NET Framework)
 
-The spec states a 2-second `LDAP_TIMEVAL` for `ldap_connect`, but then immediately adds a caveat that the "overall connection attempt may exceed 2 seconds due to underlying DNS/mDNS/NBNS resolution layers." With .NET Framework 2.0, `DirectorySearcher.ClientTimeout` and `DirectoryEntry.Options.Timeout` replace this — the framework handles DNS resolution internally. The revised spec should simply define the maximum acceptable wall-clock time before the tool reports a connection failure, expressed as a `ClientTimeout` value rather than a raw `LDAP_TIMEVAL`.
+The spec states a 2-second `LDAP_TIMEVAL` for `ldap_connect`, but then immediately adds a caveat that the "overall connection attempt may exceed 2 seconds due to underlying DNS/mDNS/NBNS resolution layers." With .NET Framework 2.0, `DirectorySearcher.ClientTimeout` (client-side maximum wait) and `DirectorySearcher.ServerTimeLimit` (server-side maximum query duration) replace this — the framework handles DNS resolution internally. The revised spec should simply define the maximum acceptable wall-clock time before the tool reports a connection failure, expressed as `ClientTimeout` and `ServerTimeLimit` values rather than a raw `LDAP_TIMEVAL`.
 
 ### 2.2. Referral Disabling Rationale is Good but Expression Should Use .NET API
 
