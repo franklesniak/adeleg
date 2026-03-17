@@ -32,7 +32,7 @@ The specification repeatedly references Rust-specific constructs (e.g., `RefCell
 
 ### 1.2. Windows LDAP C API Specifics
 
-The spec lists specific C API functions (`ldap_initW`, `ldap_connect`, `ldap_bind_sW`, `ldap_search_ext_sW`, `ldap_create_page_controlW`, `ldap_parse_page_controlW`) from `wldap32.dll`. While .NET Framework 2.0 can P/Invoke these, it would be far more natural (and less error-prone) to use `System.DirectoryServices` (`DirectoryEntry`, `DirectorySearcher`) or `System.DirectoryServices.Protocols` (`LdapConnection`, `SearchRequest`). The revised spec should define required behaviors (e.g., "perform a paged subtree search," "bind with Negotiate authentication") without mandating a specific API surface.
+The spec lists specific C API functions (`ldap_initW`, `ldap_connect`, `ldap_bind_sW`, `ldap_search_ext_sW`, `ldap_create_page_controlW`, `ldap_parse_page_controlW`) from `wldap32.dll`. .NET Framework 2.0 replaces all of these with managed APIs in `System.DirectoryServices` (`DirectoryEntry`, `DirectorySearcher`) and `System.DirectoryServices.ActiveDirectory` (`Domain`, `Forest`). The revised spec should define required behaviors in terms of these managed APIs rather than raw LDAP C API calls.
 
 ### 1.3. Embedded Compile-Time Resources
 
@@ -40,7 +40,7 @@ The spec refers to `builtin_delegations.json` being "embedded at compile time." 
 
 ### 1.4. Dynamic Library Loading
 
-The spec mentions dynamically loading `LookupAccountSidLocalW` from `sechost.dll` via `GetProcAddress`. In .NET Framework 2.0, `System.Security.Principal.SecurityIdentifier.Translate()` or P/Invoke with `LookupAccountSid` would be more natural. The revised spec should describe the SID-to-name resolution requirement without mandating a specific OS API call mechanism.
+The spec mentions dynamically loading `LookupAccountSidLocalW` from `sechost.dll` via `GetProcAddress`. In .NET Framework 2.0, `System.Security.Principal.SecurityIdentifier.Translate(typeof(NTAccount))` replaces this entirely as a managed API call — no P/Invoke or dynamic library loading is needed. The revised spec should define SID-to-name resolution exclusively through `SecurityIdentifier.Translate()`.
 
 ### 1.5. .NET Framework 2.0 Native AD Objects as Functional Replacements for the Spec's LDAP Operations
 
@@ -106,7 +106,7 @@ The spec's manual page control creation (`ldap_create_page_controlW`, `ldap_pars
 |---|---|
 | Disable referral chasing via `ldap_set_option(LDAP_OPT_REFERRALS, 0)` | `DirectorySearcher.ReferralChasing = ReferralChasingOption.None` |
 
-**Impact on the revised spec:** Same behavior, one line of managed code instead of a P/Invoke `ldap_set_option` call.
+**Impact on the revised spec:** Same behavior, one line of managed code. No P/Invoke or low-level LDAP option calls needed.
 
 #### 1.5.6. Schema Enumeration — Classes and Attributes (Replaces Spec §1/§2 Schema Queries)
 
@@ -185,9 +185,9 @@ The spec describes manual byte-level ACE parsing and an explicit `is_inherited()
 |---|---|
 | `LookupAccountSidLocalW` via dynamic `GetProcAddress` from `sechost.dll` | `SecurityIdentifier.Translate(typeof(NTAccount))` — returns an `NTAccount` with `Value` in `DOMAIN\Username` format; throws `IdentityNotMappedException` on failure |
 | LDAP SID-based lookup via `<SID=S-1-5-...>` synthetic DN | `new DirectoryEntry("LDAP://<SID=" + sid.Value + ">")` then `.Properties["distinguishedName"]` and `.Properties["objectClass"]` |
-| Cache resolved SIDs | `Dictionary<SecurityIdentifier, string>` (or a custom cache class) — semantics are application-level, not API-level |
+| Cache resolved SIDs | `Dictionary<string, string>` keyed by SID string (e.g., `sid.Value` → resolved display name) — semantics are application-level, not API-level |
 
-**Impact on the revised spec:** The `GetProcAddress`/`sechost.dll` dynamic loading and `SID_NAME_USE` enum mapping are unnecessary. The revised spec should define SID resolution as: "Attempt `SecurityIdentifier.Translate(typeof(NTAccount))` for local resolution; fall back to LDAP `<SID=...>` lookup via `DirectoryEntry`; cache results in a `Dictionary<string, string>` keyed by SID string."
+**Impact on the revised spec:** The `GetProcAddress`/`sechost.dll` dynamic loading and `SID_NAME_USE` enum mapping are unnecessary — `SecurityIdentifier.Translate(typeof(NTAccount))` replaces all of this with a single managed API call, no P/Invoke needed. The revised spec should define SID resolution as: "Attempt `SecurityIdentifier.Translate(typeof(NTAccount))` for local resolution; fall back to LDAP `<SID=...>` lookup via `DirectoryEntry`; cache results in a `Dictionary<string, string>` keyed by `SecurityIdentifier.Value`."
 
 #### 1.5.13. Owner Retrieval (Replaces Part of Spec §4)
 
@@ -296,10 +296,10 @@ The spec references the Rust `csv` crate for RFC 4180-compliant output. .NET Fra
 | Spec Behavior | .NET Framework 2.0 Replacement |
 |---|---|
 | Write RFC 4180 CSV via `csv` crate | `StreamWriter` with manual RFC 4180 quoting — fields containing commas, double-quotes, or newlines are enclosed in double-quotes, with embedded double-quotes escaped as `""` |
-| Write to file or stdout | `new StreamWriter(path, false, Encoding.UTF8)` for file output; `Console.Out` for stdout |
-| UTF-8 encoding | `Encoding.UTF8` — or `new UTF8Encoding(true)` to include a BOM for Excel compatibility |
+| Write to file or stdout | `new StreamWriter(path)` for file output (defaults to UTF-8 without BOM); `Console.Out` for stdout |
+| UTF-8 encoding without BOM | `StreamWriter`'s default constructor uses UTF-8 without BOM. To be explicit: `new StreamWriter(path, false, new UTF8Encoding(false))`. Note: `Encoding.UTF8` emits a BOM — avoid using it directly with `StreamWriter` |
 
-**Impact on the revised spec:** The revised spec should define CSV output in terms of `StreamWriter` with explicit RFC 4180 quoting rules. Since .NET Framework 2.0 has no CSV library, the spec should define the exact quoting behavior required (which is trivial to implement: ~20 lines of code). The spec should also mandate a UTF-8 BOM when writing to a file (for Excel compatibility) and no BOM when writing to stdout (for piping).
+**Impact on the revised spec:** The revised spec should define CSV output in terms of `StreamWriter` with explicit RFC 4180 quoting rules. Since .NET Framework 2.0 has no CSV library, the spec should define the exact quoting behavior required (which is trivial to implement: ~20 lines of code). The output should use UTF-8 encoding without a BOM for both file and stdout output, ensuring maximum compatibility with downstream tooling and piping.
 
 #### 1.5.23. Progress Reporting (New Behavior — Not in Current Spec)
 
@@ -311,7 +311,7 @@ The current spec has no progress reporting. For a console tool scanning large fo
 | Report elapsed time | `System.Diagnostics.Stopwatch.Elapsed` — high-resolution timer available in .NET Framework 2.0 |
 | Report scan summary | `Console.Error.WriteLine("[Done] {total} objects, {findings} findings, {elapsed}")` |
 
-**Impact on the revised spec:** The revised spec should define a progress reporting protocol using stderr. This keeps stdout clean for CSV/text data output while providing operational visibility. The `Stopwatch` class provides precise timing without P/Invoke.
+**Impact on the revised spec:** The revised spec should define a progress reporting protocol using stderr. This keeps stdout clean for CSV/text data output while providing operational visibility. The `Stopwatch` class provides precise timing using managed APIs only.
 
 #### 1.5.24. Summary of Replacement Coverage
 
@@ -442,7 +442,7 @@ Section 7 of the spec describes a multi-step SID resolution strategy with nuance
 With .NET Framework 2.0, the resolution mechanism is simpler. The revised spec should define a clear, unambiguous resolution priority using native .NET APIs:
 
 1. Cache lookup (`Dictionary<string, string>` keyed by SID string)
-2. `SecurityIdentifier.Translate(typeof(NTAccount))` — resolves well-known and domain SIDs to `DOMAIN\Username` format without requiring P/Invoke or dynamic `GetProcAddress` calls
+2. `SecurityIdentifier.Translate(typeof(NTAccount))` — resolves well-known and domain SIDs to `DOMAIN\Username` format using managed APIs only
 3. LDAP lookup via `new DirectoryEntry("LDAP://<SID=" + sid.Value + ">")` — retrieves the DN and `objectClass` for type determination
 4. Raw SID string as fallback
 
@@ -450,7 +450,7 @@ The cache should have simple "first write wins" semantics (once resolved, a SID'
 
 ### 5.2. `SecurityIdentifier.Translate()` Replaces `LookupAccountSidLocalW`
 
-The spec relies on dynamically loading `LookupAccountSidLocalW` from `sechost.dll` via `GetProcAddress`. In .NET Framework 2.0, `SecurityIdentifier.Translate(typeof(NTAccount))` provides the same functionality without P/Invoke. This method throws `IdentityNotMappedException` on failure, which is cleaner than checking Win32 error codes. The revised spec should define SID-to-name resolution exclusively through `SecurityIdentifier.Translate()` and document the expected behavior when translation fails (e.g., cross-forest SIDs, workgroup scenarios, non-domain-joined machines).
+The spec relies on dynamically loading `LookupAccountSidLocalW` from `sechost.dll` via `GetProcAddress`. In .NET Framework 2.0, `SecurityIdentifier.Translate(typeof(NTAccount))` replaces this entirely as a managed API call — no P/Invoke, no dynamic library loading, and no Win32 error code handling. This method throws `IdentityNotMappedException` on failure, which is cleaner than checking Win32 error codes. The revised spec should define SID-to-name resolution exclusively through `SecurityIdentifier.Translate()` and document the expected behavior when translation fails (e.g., cross-forest SIDs, workgroup scenarios, non-domain-joined machines).
 
 ### 5.3. Cache Should Store a Typed Resolution Result
 
@@ -525,9 +525,9 @@ The spec does not explicitly state whether the CSV includes a header row. RFC 41
 
 .NET Framework 2.0 does not have a built-in CSV library. The spec references the Rust `csv` crate for RFC 4180 compliance. The revised spec should either require RFC 4180 compliance (which can be achieved with a simple manual implementation in .NET Framework 2.0 — proper quoting of fields containing commas, double-quotes, and newlines) or specify a simpler escaping convention. Given that DNs can contain commas, proper CSV quoting is essential.
 
-### 7.5. UTF-8 Encoding With or Without BOM
+### 7.5. UTF-8 Encoding Without BOM
 
-The spec states UTF-8 encoding but does not mention a Byte Order Mark (BOM). Many Windows tools (including Excel, which is a common consumer of CSV files) handle UTF-8 CSV files better when a BOM is present. The revised spec should explicitly state whether a BOM should be included, given that the target audience likely uses Windows tools to consume the output.
+The spec states UTF-8 encoding but does not mention a Byte Order Mark (BOM). The revised spec should explicitly mandate UTF-8 without BOM. While some Windows tools (e.g., older versions of Excel) handle UTF-8 CSV files better with a BOM, omitting the BOM ensures cleaner interoperability with piping, downstream parsing tools, and modern applications that correctly detect UTF-8 without a BOM. In .NET Framework 2.0, `StreamWriter`'s default constructor already uses UTF-8 without BOM, so this is the natural default.
 
 ### 7.6. Multiple CSV Output Files Should Be Considered
 
@@ -663,7 +663,7 @@ With .NET Framework 2.0, DC discovery is a solved problem. The revised spec shou
 - Support an optional `--server` override for targeting a specific DC (expressed as `new DirectoryEntry("LDAP://specificServer/...")`)
 - Define failure behavior when `Domain.GetCurrentDomain()` throws `ActiveDirectoryObjectNotFoundException` (e.g., non-domain-joined machine)
 
-This approach eliminates the need for raw `DsGetDcName` P/Invoke calls or DNS SRV record parsing.
+This approach uses managed APIs exclusively, eliminating any need for P/Invoke calls or DNS SRV record parsing.
 
 ### 11.4. No Specification for Encoding of DN Strings
 
@@ -739,9 +739,9 @@ The spec mentions `--password *` for interactive password entry and `--password 
 
 The spec correctly warns about `--password` leaking credentials via process listings. The revised spec should consider deprecating the cleartext `--password` option entirely and supporting only interactive entry (`--password *`) and SSPI/Kerberos (no password needed). If cleartext must be supported for automation, environment variable input (`ADELEG_PASSWORD`) would be less visible than a command-line argument.
 
-### 14.2. No Certificate Validation for LDAPS — Use `ServicePointManager` or `AuthenticationTypes.SecureSocketsLayer`
+### 14.2. LDAPS Certificate Validation Is Handled by .NET Native AD Objects
 
-If LDAPS support is added (see Section 2.4), the spec should define certificate validation behavior. In .NET Framework 2.0, LDAPS connections can be established by specifying `AuthenticationTypes.SecureSocketsLayer` in the `DirectoryEntry` constructor or by using port 636 in the LDAP path (e.g., `"LDAP://server:636"`). Custom certificate validation can be implemented via `ServicePointManager.ServerCertificateValidationCallback`. The revised spec should define the default behavior (validate the server certificate against the local CA trust store) and any override options (e.g., `--ignore-cert-errors` for testing environments).
+When using `System.DirectoryServices` with `DirectoryEntry`, LDAPS certificate validation is handled automatically by the underlying Windows LDAP subsystem using the machine's trusted CA certificate store. No custom certificate validation code, `ServicePointManager` callbacks, or P/Invoke hooks are needed. If the tool connects via `AuthenticationTypes.Secure` (the recommended default), the connection uses SASL/Kerberos signing and encryption without requiring LDAPS at all. The revised spec should rely on this default secure behavior and avoid specifying low-level certificate validation details. If an explicit LDAPS connection is ever needed (e.g., `"LDAP://server:636"` with `AuthenticationTypes.SecureSocketsLayer`), the Windows trust store evaluation applies automatically.
 
 ### 14.3. No Audit Trail of Tool Execution
 
