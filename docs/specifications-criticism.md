@@ -213,7 +213,107 @@ The spec's `(objectClass=*)` subtree search is the core scanning operation. Whil
 
 **Impact on the revised spec:** The query logic is the same, but expressed through `DirectorySearcher` properties instead of raw LDAP API calls. The key difference is that `DirectorySearcher.PageSize` handles paging transparently, and `SecurityMasks` replaces the manual SD flags control. The revised spec should describe this scan in terms of `DirectorySearcher` configuration.
 
-#### 1.5.16. Summary of Replacement Coverage
+#### 1.5.16. Access Mask Interpretation (Replaces Spec §8 Raw Bitmask Mapping)
+
+The spec describes mapping raw 32-bit access mask values (hex constants like `0x20`, `0x100`, `0x80000`) to human-readable descriptions. .NET Framework 2.0 replaces raw bitmask manipulation with a typed flags enum:
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Check `access_mask & 0x20` for `WRITE_PROP` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.WriteProperty)` |
+| Check `access_mask & 0x100` for `CONTROL_ACCESS` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.ExtendedRight)` |
+| Check `access_mask & 0x1` for `CREATE_CHILD` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.CreateChild)` |
+| Check `access_mask & 0x2` for `DELETE_CHILD` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.DeleteChild)` |
+| Check `access_mask & 0x80000` for `WRITE_OWNER` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.WriteOwner)` |
+| Check `access_mask & 0x40000` for `WRITE_DAC` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.WriteDacl)` |
+| Check `access_mask & 0x10000` for `DELETE` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.Delete)` |
+| Check `access_mask & 0x40` for `DELETE_TREE` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.DeleteTree)` |
+| Check `access_mask & 0x8` for `DS_SELF` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.Self)` |
+| Check `access_mask & 0x1000000` for `ACCESS_SYSTEM_SECURITY` | `ActiveDirectoryAccessRule.ActiveDirectoryRights.HasFlag(ActiveDirectoryRights.AccessSystemSecurity)` |
+| Mask out read-only rights via `access_mask & ~IGNORED_RIGHTS` | Check `ActiveDirectoryRights.ReadProperty`, `ActiveDirectoryRights.ListChildren`, `ActiveDirectoryRights.ReadControl`, `ActiveDirectoryRights.ListObject` individually |
+| Combine multiple rights as raw OR'd bitmask | `ActiveDirectoryRights` is a `[Flags]` enum — use `HasFlag()`, bitwise AND/OR, and `ToString()` for symbolic names |
+
+**Impact on the revised spec:** The access mask mapping table in the spec (§8) should be rewritten in terms of `ActiveDirectoryRights` enum values instead of hex constants. The "ignored (read-only) access rights" set should be defined using enum values: `ActiveDirectoryRights.ReadProperty | ActiveDirectoryRights.ListChildren | ActiveDirectoryRights.ReadControl | ActiveDirectoryRights.ListObject`. The `--show-raw` mode can use `((int)rule.ActiveDirectoryRights).ToString("X8")` to display hex values and `rule.ActiveDirectoryRights.ToString()` for symbolic names — eliminating the need for a manual bitmask-to-name mapping table.
+
+#### 1.5.17. ACL Canonicality Check (Replaces Part of Spec §12)
+
+The spec manually checks whether deny ACEs follow allow ACEs among explicit ACEs and whether explicit ACEs follow inherited ACEs. .NET Framework 2.0 provides a built-in check:
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Manually iterate ACEs checking deny-after-allow and explicit-after-inherited ordering | `RawSecurityDescriptor` → `CommonSecurityDescriptor` → `.DiscretionaryAcl.IsCanonical` (returns `bool`) |
+
+**Impact on the revised spec:** The canonicality check logic described in the spec can be replaced with a single property access on `CommonAcl.IsCanonical`. However, this only answers "is it canonical?" — it does not identify which specific ACE is out of order. If the revised spec requires reporting the specific offending ACE (as the current spec does), the manual iteration is still needed as a supplement. The revised spec should state: "Use `CommonAcl.IsCanonical` as the primary canonicality check; if it returns `false`, iterate the ACEs to identify the specific ordering violation for the warning message."
+
+#### 1.5.18. DACL Inheritance Protection Detection (Replaces Part of Spec §6)
+
+The spec manually checks the `SE_DACL_PROTECTED` flag from the SD control field. .NET Framework 2.0 exposes this directly:
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Check `SE_DACL_PROTECTED` flag via `GetSecurityDescriptorControl` | `ActiveDirectorySecurity.AreAccessRulesProtected` (returns `bool` — `true` if DACL inheritance is blocked) |
+
+**Impact on the revised spec:** The DACL protection check is a single property access. The spec should replace the raw flag check with: "Check `ActiveDirectorySecurity.AreAccessRulesProtected` to determine if DACL inheritance is blocked."
+
+#### 1.5.19. Domain SID Prefix Matching for Deleted Trustee Detection (Replaces Part of Spec §12)
+
+The spec computes domain SID prefixes manually via `shares_prefix_with(domain_sid.with_rid(0))` to determine if an unresolvable SID belongs to the current domain. .NET Framework 2.0 provides this natively:
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Strip RID and compare SID prefixes manually | `SecurityIdentifier.AccountDomainSid` — returns the domain portion of a SID (strips the RID), or `null` for well-known SIDs that have no domain component |
+| Check if SID belongs to a specific domain | `sid.AccountDomainSid != null && sid.AccountDomainSid.Equals(domainSid)` — direct comparison of domain SIDs |
+
+**Impact on the revised spec:** The deleted trustee detection logic should be expressed as: "For each unresolvable trustee SID, check `SecurityIdentifier.AccountDomainSid`. If it matches the naming context's associated domain SID (or the root domain SID for non-domain NCs), flag the ACE as a deleted trustee." This is cleaner and less error-prone than manual SID byte manipulation.
+
+#### 1.5.20. Foreign Security Principal Resolution (Replaces Part of Spec §12)
+
+The spec describes special handling for `CN=ForeignSecurityPrincipals` objects, preferring `LookupAccountSidLocalW` over the container DN. .NET Framework 2.0 handles this transparently:
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Detect FSP container objects and prefer local SID resolution | `SecurityIdentifier.Translate(typeof(NTAccount))` — resolves trusted-domain and well-known SIDs automatically, regardless of where they appear in the directory. Returns `DOMAIN\Username` format. Throws `IdentityNotMappedException` for truly unresolvable SIDs |
+| Fall back to raw SID for cross-forest principals | Catch `IdentityNotMappedException` and use `SecurityIdentifier.Value` (the SDDL string form, e.g., `S-1-5-21-...`) as the fallback display name |
+
+**Impact on the revised spec:** The FSP-specific handling in the spec becomes unnecessary — `SecurityIdentifier.Translate()` already does the right thing for cross-domain, cross-forest, and well-known SIDs. The revised spec should state: "Resolve all trustee SIDs using `SecurityIdentifier.Translate(typeof(NTAccount))`. If translation throws `IdentityNotMappedException`, fall back to `SecurityIdentifier.Value` as the display name."
+
+#### 1.5.21. Delegation and Template Data Format (Replaces Spec §11 JSON Format)
+
+The spec uses JSON for delegation and template definitions (`builtin_delegations.json`, `templates.json`). .NET Framework 2.0 lacks native JSON support but has full XML support:
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Parse JSON delegation files | `System.Xml.XmlDocument.Load(path)` — load XML delegation files with `SelectNodes()` for XPath queries |
+| Embed built-in delegations as a compiled resource | Embed as an XML resource (`Assembly.GetManifestResourceStream()`) and parse with `XmlDocument` |
+| Parse template files | `System.Xml.Serialization.XmlSerializer` — deserialize template definitions directly into typed objects |
+| JSON schema validation | XML Schema (XSD) validation via `XmlReaderSettings.Schemas` — provides formal schema validation that JSON lacks |
+
+**Impact on the revised spec:** The revised spec should define the delegation and template format as XML rather than JSON. XML provides several advantages in .NET Framework 2.0: native parsing (`XmlDocument`, `XmlReader`), native serialization (`XmlSerializer`), formal schema validation (XSD), and XPath query support. The revised spec should define the XML schema for delegation and template files, including element names, attribute types, and validation rules. The `access_mask` values in delegation definitions should use symbolic `ActiveDirectoryRights` enum names (e.g., `WriteProperty`, `ExtendedRight`) rather than raw numeric values, resolved at load time via `Enum.Parse(typeof(ActiveDirectoryRights), name)`.
+
+#### 1.5.22. CSV Output Writing (Replaces Spec §10 CSV Generation)
+
+The spec references the Rust `csv` crate for RFC 4180-compliant output. .NET Framework 2.0 has no built-in CSV library, but the operation is simple:
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Write RFC 4180 CSV via `csv` crate | `StreamWriter` with manual RFC 4180 quoting — fields containing commas, double-quotes, or newlines are enclosed in double-quotes, with embedded double-quotes escaped as `""` |
+| Write to file or stdout | `new StreamWriter(path, false, Encoding.UTF8)` for file output; `Console.Out` for stdout |
+| UTF-8 encoding | `Encoding.UTF8` — or `new UTF8Encoding(true)` to include a BOM for Excel compatibility |
+
+**Impact on the revised spec:** The revised spec should define CSV output in terms of `StreamWriter` with explicit RFC 4180 quoting rules. Since .NET Framework 2.0 has no CSV library, the spec should define the exact quoting behavior required (which is trivial to implement: ~20 lines of code). The spec should also mandate a UTF-8 BOM when writing to a file (for Excel compatibility) and no BOM when writing to stdout (for piping).
+
+#### 1.5.23. Progress Reporting (New Behavior — Not in Current Spec)
+
+The current spec has no progress reporting. For a console tool scanning large forests, this is a significant usability gap. .NET Framework 2.0 supports this natively:
+
+| Behavior | .NET Framework 2.0 Implementation |
+|---|---|
+| Report current naming context being scanned | `Console.Error.Write("\r[Scanning {ncDN}] {count} objects processed...")` — write to stderr with carriage return for in-place updates |
+| Report elapsed time | `System.Diagnostics.Stopwatch.Elapsed` — high-resolution timer available in .NET Framework 2.0 |
+| Report scan summary | `Console.Error.WriteLine("[Done] {total} objects, {findings} findings, {elapsed}")` |
+
+**Impact on the revised spec:** The revised spec should define a progress reporting protocol using stderr. This keeps stdout clean for CSV/text data output while providing operational visibility. The `Stopwatch` class provides precise timing without P/Invoke.
+
+#### 1.5.24. Summary of Replacement Coverage
 
 | Spec Area | Fully Replaced by .NET Framework 2.0? | Notes |
 |---|---|---|
@@ -232,17 +332,25 @@ The spec's `(objectClass=*)` subtree search is the core scanning operation. Whil
 | Schema class/attribute enumeration | ✅ Yes | `ActiveDirectorySchema.FindAllClasses()` / `FindAllProperties()` |
 | RootDSE bootstrap | ✅ Yes | `DirectoryEntry("LDAP://RootDSE")` |
 | Connection timeouts | ✅ Yes | `DirectorySearcher.ClientTimeout`, `DirectoryEntry.Options` |
+| Access mask interpretation | ✅ Yes | `ActiveDirectoryRights` flags enum with `HasFlag()`, `ToString()` |
+| ACL canonicality check | ✅ Yes | `CommonAcl.IsCanonical` for detection; manual iteration for specific ACE identification |
+| DACL inheritance protection | ✅ Yes | `ActiveDirectorySecurity.AreAccessRulesProtected` |
+| Domain SID prefix matching | ✅ Yes | `SecurityIdentifier.AccountDomainSid` for domain-portion extraction and comparison |
+| Foreign security principal resolution | ✅ Yes | `SecurityIdentifier.Translate(typeof(NTAccount))` handles FSPs transparently |
+| Delegation/template data format | ✅ Yes | `System.Xml.XmlDocument`, `XmlSerializer`, XSD validation — replaces JSON entirely |
+| CSV output writing | ✅ Yes | `StreamWriter` with manual RFC 4180 quoting — simple, no external library needed |
+| Progress reporting | ✅ Yes (new) | `Console.Error`, `Stopwatch` — not in current spec but should be in revised spec |
 | Extended rights / property sets / validated writes | ⚠️ Partial | Still need `DirectorySearcher` on Configuration NC — no managed schema API for these |
 | Domain NetBIOS names | ⚠️ Partial | `Forest.Domains` provides DNS names; NetBIOS requires supplemental query |
-| Callback ACE conditional expressions | ❌ Not addressed | `GetAccessRules()` may not expose callback conditionals — same limitation as current spec |
+| Callback ACE conditional expressions | ❌ Not addressed | `GetAccessRules()` does not expose callback conditionals — same limitation as current spec |
 
-**Conclusion for the revised spec:** 14 of 17 major LDAP operation areas are fully replaced by .NET Framework 2.0 managed APIs. The revised spec should be written in terms of these managed APIs, not in terms of raw LDAP operations. The spec's entire Section 2 (Directory Query Mechanics), Section 3 (Paging), and most of Section 4 (SD Parsing) should be replaced by .NET Framework 2.0-native descriptions. The remaining LDAP-level concerns in Section 2 of this criticism document are retained only for the three partially-replaced areas and as fallback considerations.
+**Conclusion for the revised spec:** 22 of 25 major operation areas are fully replaced by .NET Framework 2.0 managed APIs, with an additional area (progress reporting) that is new functionality enabled by .NET console APIs. The revised spec should be written in terms of these managed APIs, not in terms of raw LDAP operations or Windows API calls. The spec's entire Section 2 (Directory Query Mechanics), Section 3 (Paging), Section 4 (SD Parsing), Section 7 (SID Resolution), and Section 8 (Access Mask Mapping) should be replaced by .NET Framework 2.0-native descriptions. The remaining concerns in Section 2 of this criticism document are retained only for the two partially-replaced areas (extended rights and domain NetBIOS names) and the one unaddressed area (callback ACE conditionals).
 
 ---
 
 ## 2. Residual LDAP Access Layer Concerns
 
-> **Context:** Section 1.5 demonstrates that 14 of 17 major LDAP operation areas in the reference spec are fully replaced by .NET Framework 2.0 managed APIs. The criticisms below address the **three partially-replaced areas** (extended rights enumeration, domain NetBIOS names, callback ACEs) and edge cases where the .NET Framework abstractions may need supplementation. If the revised spec is written at the .NET Framework abstraction level as recommended, most of these points become implementation notes rather than spec-level concerns.
+> **Context:** Section 1.5 demonstrates that 22 of 25 major operation areas in the reference spec are fully replaced by .NET Framework 2.0 managed APIs. The criticisms below address the **two partially-replaced areas** (extended rights enumeration and domain NetBIOS names) and edge cases where the .NET Framework abstractions may need supplementation. If the revised spec is written at the .NET Framework abstraction level as recommended, most of these points become implementation notes rather than spec-level concerns.
 
 ### 2.1. Connection Timeout Semantics Are Unclear (Largely Moot with .NET Framework)
 
@@ -298,23 +406,30 @@ The revised spec should address this as a design decision. Options include: spec
 
 ## 4. Security Descriptor Parsing
 
-### 4.1. Binary Parsing is Unnecessary — Use Managed APIs
+### 4.1. The Revised Spec Should Define SD Processing Exclusively Through Managed APIs
 
-The spec describes parsing security descriptors from raw binary blobs using Windows API calls (`IsValidSecurityDescriptor`, `GetSecurityDescriptorControl`, `GetSecurityDescriptorOwner`, `GetSecurityDescriptorDacl`, etc.) and parsing ACEs byte-by-byte with `GetAce`. As detailed in Section 1.5.10, .NET Framework 2.0 provides `ActiveDirectorySecurity.GetAccessRules(true, false, typeof(SecurityIdentifier))` which returns typed `ActiveDirectoryAccessRule` objects with all relevant properties (access type, rights, object GUIDs, inheritance flags, trustee SID) already parsed. The revised spec should describe ACE processing in terms of `ActiveDirectoryAccessRule` properties, not in terms of raw binary structures or Windows API calls.
+The spec describes parsing security descriptors from raw binary blobs using Windows API calls (`IsValidSecurityDescriptor`, `GetSecurityDescriptorControl`, `GetSecurityDescriptorOwner`, `GetSecurityDescriptorDacl`, etc.) and parsing ACEs byte-by-byte with `GetAce`. As detailed in Section 1.5.10, .NET Framework 2.0 provides `ActiveDirectorySecurity.GetAccessRules(true, false, typeof(SecurityIdentifier))` which returns typed `ActiveDirectoryAccessRule` objects with all relevant properties (access type, rights, object GUIDs, inheritance flags, trustee SID) already parsed. The revised spec should describe ACE processing exclusively in terms of `ActiveDirectoryAccessRule` properties:
 
-For cases where `ActiveDirectorySecurity` is not directly available (e.g., reading the SD as a byte array from a `SearchResult`), `new RawSecurityDescriptor(bytes, 0)` provides a parsed SD with `.DiscretionaryAcl` access, and individual ACEs can be examined through `CommonAce` and `ObjectAce` types in `System.Security.AccessControl`.
+- **Access type**: `rule.AccessControlType` (enum: `Allow` or `Deny`)
+- **Rights**: `rule.ActiveDirectoryRights` (flags enum — see Section 1.5.16)
+- **Object type GUID**: `rule.ObjectType` (returns `Guid`)
+- **Inherited object type GUID**: `rule.InheritedObjectType` (returns `Guid`)
+- **Trustee SID**: `(SecurityIdentifier)rule.IdentityReference`
+- **Inheritance scope**: `rule.InheritanceFlags` and `rule.PropagationFlags`
+
+For `SearchResult`-based access (where `ActiveDirectorySecurity` may not be directly available), `new RawSecurityDescriptor(bytes, 0)` provides a parsed SD with `.DiscretionaryAcl` access, and individual ACEs can be examined through `CommonAce` and `ObjectAce` types in `System.Security.AccessControl`.
 
 ### 4.2. SDDL Parsing Should Use `RawSecurityDescriptor(string)`
 
 The spec mentions parsing SDDL strings from schema `defaultSecurityDescriptor` attributes using `ConvertStringSecurityDescriptorToSecurityDescriptorW`. As detailed in Section 1.5.11, .NET Framework 2.0 provides `RawSecurityDescriptor(string)` which accepts SDDL directly. The resulting `.DiscretionaryAcl` provides ACE enumeration through `CommonAce` and `ObjectAce` types. The revised spec should describe this requirement as: "Parse `defaultSecurityDescriptor` SDDL strings using `RawSecurityDescriptor(string)` and enumerate the resulting `DiscretionaryAcl`."
 
-### 4.3. Callback ACE Handling is Underspecified
+### 4.3. Callback ACE Handling is Underspecified and Unchanged by .NET
 
-The spec acknowledges that callback ACE conditional expressions are not evaluated, but the spec does not clearly state what should happen with these ACEs in the output. Are they reported with a warning that the condition was not evaluated? Are they treated identically to non-callback ACEs? This ambiguity should be resolved in the revised spec.
+The spec acknowledges that callback ACE conditional expressions are not evaluated, but the spec does not clearly state what should happen with these ACEs in the output. Are they reported with a warning that the condition was not evaluated? Are they treated identically to non-callback ACEs? This ambiguity should be resolved in the revised spec. Note that .NET Framework 2.0's `GetAccessRules()` returns callback ACEs as `ActiveDirectoryAccessRule` objects but does not expose the conditional expression data — the same limitation exists in both the current Rust tool and the .NET Framework 2.0 rewrite (see Section 1.5.10).
 
-### 4.4. ACE Type Coverage
+### 4.4. ACE Type Coverage is Handled Transparently by .NET
 
-The spec lists 13 ACE types that are handled, but does not mention `ACCESS_ALLOWED_COMPOUND_ACE_TYPE` (type 4), `SYSTEM_ALARM_ACE_TYPE` (type 3), `SYSTEM_ALARM_OBJECT_ACE_TYPE` (type 8), or `SYSTEM_ALARM_CALLBACK_ACE_TYPE`/`SYSTEM_ALARM_CALLBACK_OBJECT_ACE_TYPE`. While these are rarely encountered, the spec should explicitly state how unknown or unsupported ACE types are handled — are they silently skipped, logged as warnings, or treated as errors?
+The spec lists 13 ACE types that are handled, but does not mention `ACCESS_ALLOWED_COMPOUND_ACE_TYPE` (type 4), `SYSTEM_ALARM_ACE_TYPE` (type 3), `SYSTEM_ALARM_OBJECT_ACE_TYPE` (type 8), or `SYSTEM_ALARM_CALLBACK_ACE_TYPE`/`SYSTEM_ALARM_CALLBACK_OBJECT_ACE_TYPE`. With .NET Framework 2.0's `GetAccessRules()` and `GetAuditRules()`, the framework parses all supported ACE types and exposes them through the same `ActiveDirectoryAccessRule` / `ActiveDirectoryAuditRule` classes — the tool does not need to enumerate ACE types manually. The revised spec should state that ACE type coverage is determined by the framework's `GetAccessRules()` implementation, and should define behavior only for ACE types that the framework does not expose (which would be returned as `CustomAce` objects in the raw `RawSecurityDescriptor.DiscretionaryAcl` collection).
 
 ---
 
@@ -369,17 +484,19 @@ The list of ignored trustee SIDs (SELF, Local System, BUILTIN\Administrators, et
 
 The spec suppresses ACEs for Account Operators (`S-1-5-32-548`), Server Operators (`S-1-5-32-549`), Print Operators (`S-1-5-32-550`), and Backup Operators (`S-1-5-32-551`) by default. These groups are well-known attack vectors in Active Directory. Security auditors often specifically want to see what these groups can do. Suppressing them by default could give a false sense of security. The revised spec should either remove these from the default suppression list or make suppression opt-in.
 
-### 6.5. Read-Only Access Rights Masking Could Hide Write+Read Combined ACEs
+### 6.5. Read-Only Access Rights Masking Should Use `ActiveDirectoryRights` Enum
 
-The spec masks out read-only rights (`READ_CONTROL`, `ACTRL_DS_LIST`, `DS_LIST_OBJECT`, `DS_READ_PROP`) before comparing access masks. While this correctly focuses on write/modify permissions, it means the output may not accurately reflect the full scope of an ACE. If an ACE grants both `DS_WRITE_PROP` and `DS_READ_PROP`, the output will show only `DS_WRITE_PROP`. The revised spec should clarify whether the output should reflect the masked or unmasked access rights, and whether a "raw" mode should show the full mask.
+The spec masks out read-only rights (`READ_CONTROL`, `ACTRL_DS_LIST`, `DS_LIST_OBJECT`, `DS_READ_PROP`) before comparing access masks using raw bitmask operations. With .NET Framework 2.0, the same logic should use the `ActiveDirectoryRights` flags enum (see Section 1.5.16): define the ignored set as `ActiveDirectoryRights.ReadProperty | ActiveDirectoryRights.ListChildren | ActiveDirectoryRights.ReadControl | ActiveDirectoryRights.ListObject`, then check `(rule.ActiveDirectoryRights & ~ignoredRights) == 0` to detect read-only ACEs. While this correctly focuses on write/modify permissions, it means the output may not accurately reflect the full scope of an ACE. If an ACE grants both `WriteProperty` and `ReadProperty`, the output will show only `WriteProperty`. The revised spec should clarify whether the output should reflect the masked or unmasked access rights, and whether a "raw" mode should show the full mask.
 
 ### 6.6. "Delete Protection" Deny ACE Suppression is Overly Broad
 
 The spec suppresses deny ACEs for `Everyone` that deny `DELETE`, `DS_DELETE_CHILD`, and/or `DS_DELETE_TREE`. However, this suppression does not verify that the ACE only denies these rights — it checks if these rights are present but there could also be other denied rights in the same ACE. The revised spec should clarify whether the suppression applies only to ACEs that deny exclusively these rights, or also to ACEs that deny these rights among others.
 
-### 6.7. AdminSDHolder Matching Does Not Account for Stale adminCount
+### 6.7. AdminSDHolder Matching Does Not Account for Stale adminCount — Consider `ActiveDirectorySecurity.AreAccessRulesProtected`
 
 The spec excludes AdminSDHolder-matching ACEs for objects with `adminCount != 0`. However, `adminCount` is notoriously stale in AD — it is set when an object is added to a protected group but not always cleared when the object is removed. This means formerly-protected objects that still have `adminCount=1` but are no longer in a protected group will have their ACEs incorrectly filtered. The revised spec should acknowledge this limitation and consider whether additional validation (e.g., checking actual group membership) is warranted.
+
+Additionally, the DACL inheritance protection check for AdminSDHolder-managed objects should use `ActiveDirectorySecurity.AreAccessRulesProtected` (see Section 1.5.18) rather than manually checking the `SE_DACL_PROTECTED` flag.
 
 ---
 
@@ -424,13 +541,17 @@ The spec mentions that `--csv -` writes CSV to stdout. However, the tool also wr
 
 ## 8. Delegation and Template System
 
-### 8.1. JSON Format is Problematic for .NET Framework 2.0
+### 8.1. Delegation/Template Format Should Use XML, Not JSON
 
-As noted in Section 3.6, .NET Framework 2.0 lacks native JSON support. The current delegation and template format uses JSON. The revised spec should either:
+As noted in Section 3.6 and detailed in Section 1.5.21, .NET Framework 2.0 lacks native JSON support but has comprehensive XML support. The revised spec should adopt XML as the delegation and template format. This provides several concrete advantages:
 
-- Adopt XML format (natively supported in .NET Framework 2.0 via `System.Xml`)
-- Explicitly require a specific JSON library and version
-- Define a simpler text-based format (e.g., INI-style, CSV-based)
+- **Native parsing**: `XmlDocument.Load(path)` for DOM-based access, or `XmlReader` for streaming
+- **Type-safe deserialization**: `XmlSerializer` can deserialize XML directly into typed C# objects (`Delegation`, `Template` classes)
+- **Formal schema validation**: XML Schema (XSD) files can formally define the structure of delegation/template files, with validation via `XmlReaderSettings.Schemas` — this is stronger than JSON Schema and requires no external library
+- **XPath querying**: `XmlDocument.SelectNodes("//delegation[@trustee='...']")` for flexible querying
+- **Embedded resources**: Built-in delegation definitions can be embedded as XML resources via `Assembly.GetManifestResourceStream()` and parsed with `XmlDocument.Load(stream)`
+
+The revised spec should define the XML schema for delegation and template files.
 
 ### 8.2. Template System is Underspecified
 
@@ -449,39 +570,46 @@ The spec describes wildcard patterns for delegation locations (`DC=*`, `CN=Confi
 
 The spec describes matching orphan ACEs against expected delegation ACEs, but does not describe what happens when an ACE matches a delegation but with additional rights. For example, if a delegation expects `WRITE_PROP` for attribute X, but the actual ACE grants `WRITE_PROP | DELETE` for attribute X, is this a match? A partial match? The revised spec should clarify the matching semantics for superset/subset access masks.
 
-### 8.5. `access_mask` in Delegation/Template Definitions Uses Magic Numbers
+### 8.5. `access_mask` in Delegation/Template Definitions Should Use `ActiveDirectoryRights` Enum Names
 
-The spec describes delegation and template definitions that use raw numeric `access_mask` values (the spec itself uses values like `48`, `8`, and `256` for `validAccesses` in LDAP filters, and the delegation JSON format uses numeric `access_mask` fields). Raw numeric access masks are opaque and error-prone for human authors. The revised spec should either define symbolic constants for these values (mirroring the human-readable names in Section 8's access mask mapping table) or require the template/delegation format to use symbolic names that the tool resolves at load time.
+The spec describes delegation and template definitions that use raw numeric `access_mask` values (the spec itself uses values like `48`, `8`, and `256` for `validAccesses` in LDAP filters, and the delegation JSON format uses numeric `access_mask` fields). Raw numeric access masks are opaque and error-prone for human authors. As detailed in Section 1.5.16, .NET Framework 2.0's `ActiveDirectoryRights` enum provides symbolic names for all AD-specific access rights. The revised spec should require the delegation/template format (whether XML or otherwise) to use `ActiveDirectoryRights` enum names (e.g., `WriteProperty`, `ExtendedRight`, `CreateChild`, `DeleteChild`, `WriteDacl`, `WriteOwner`, `Delete`, `DeleteTree`, `Self`, `AccessSystemSecurity`) rather than raw numeric values. These can be resolved at load time via `(ActiveDirectoryRights)Enum.Parse(typeof(ActiveDirectoryRights), name)`.
 
 ---
 
 ## 9. Error Handling and Fault Tolerance
 
-### 9.1. Exit Code 1 for All Errors is Insufficient
+### 9.1. Exit Code 1 for All Errors is Insufficient — Use .NET `Environment.ExitCode`
 
-The spec describes a single exit code (1) for all error conditions. For a console tool, differentiated exit codes would be far more useful for scripting and automation:
+The spec describes a single exit code (1) for all error conditions. For a console tool, differentiated exit codes would be far more useful for scripting and automation. .NET Framework 2.0 sets exit codes via `Environment.ExitCode` or the return value from `Main()`:
 
 - 0: Success (no issues found or findings exported to CSV)
 - 1: General/unexpected error
-- 2: Connection/authentication failure
-- 3: Input file parsing error (templates, delegations)
-- 4: Output file error (cannot write CSV)
+- 2: Connection/authentication failure (`DirectoryServicesCOMException` or `ActiveDirectoryObjectNotFoundException`)
+- 3: Input file parsing error (templates, delegations — `XmlException` or `InvalidOperationException` from `XmlSerializer`)
+- 4: Output file error (cannot write CSV — `IOException`, `UnauthorizedAccessException`)
 
 ### 9.2. Error Counter Message is Misleading
 
 The spec acknowledges that the `warning_unreadable_count` message says "security descriptors could not be read" but actually counts all per-location processing errors (including missing `objectClass` and unparseable SDDL). The revised spec should fix this messaging inconsistency.
 
-### 9.3. Panic on Empty `objectClass` is Unacceptable
+### 9.3. Panic on Empty `objectClass` is Unacceptable — Use Exception Handling
 
-The spec states that an object with a present but empty `objectClass` value list causes a panic (via `.pop().expect(...)`). While this may be "impossible" in a valid AD, network errors, proxying LDAP servers, or AD corruption could cause this condition. The revised spec should require graceful handling (log an error, skip the object, continue scanning).
+The spec states that an object with a present but empty `objectClass` value list causes a panic (via `.pop().expect(...)`). While this may be "impossible" in a valid AD, network errors, proxying LDAP servers, or AD corruption could cause this condition. In .NET Framework 2.0, the equivalent of a "panic" is an unhandled exception crashing the process. The revised spec should require `try/catch` handling around per-object processing — if `SearchResult.Properties["objectClass"].Count == 0`, log an error to stderr and skip the object, continuing the scan.
 
-### 9.4. Search-Level Error Aborts Entire Run
+### 9.4. Search-Level Error Should Not Abort Entire Run — Catch `DirectoryServicesCOMException`
 
-The spec states that a search-level LDAP error during `get_explicit_aces()` "aborts scanning for that entire naming context (and currently the entire run)." This is too aggressive. The revised spec should define retry behavior for transient errors and allow the tool to continue with remaining naming contexts if one fails. At minimum, the tool should report which naming contexts were successfully scanned and which failed.
+The spec states that a search-level LDAP error during `get_explicit_aces()` "aborts scanning for that entire naming context (and currently the entire run)." This is too aggressive. In .NET Framework 2.0, search errors surface as `DirectoryServicesCOMException` with specific `ErrorCode` values (matching LDAP error codes). The revised spec should define:
 
-### 9.5. No Progress Reporting for Long Scans
+- **Transient errors** (e.g., `LDAP_BUSY`, `LDAP_UNAVAILABLE`): Retry with exponential backoff (via `System.Threading.Thread.Sleep()`)
+- **Non-transient errors** (e.g., `LDAP_INSUFFICIENT_RIGHTS`, `LDAP_NO_SUCH_OBJECT`): Log the error, skip the naming context, continue with remaining NCs
+- **Summary reporting**: At the end of the scan, report which naming contexts were successfully scanned and which failed, using `Console.Error.WriteLine()`
 
-The spec does not define any progress reporting mechanism. In large forests with millions of objects, scanning can take a very long time. The revised spec should define a progress reporting mechanism (e.g., periodic messages to stderr showing objects processed, current naming context, elapsed time, estimated completion).
+### 9.5. Progress Reporting Should Use `Console.Error` and `Stopwatch`
+
+The spec does not define any progress reporting mechanism. In large forests with millions of objects, scanning can take a very long time. As detailed in Section 1.5.23, .NET Framework 2.0 supports progress reporting via `Console.Error.Write()` (to avoid mixing with CSV data on stdout) and `System.Diagnostics.Stopwatch` for precise elapsed-time tracking. The revised spec should define a progress reporting protocol, e.g.:
+
+- `Console.Error.Write("\r[{ncDN}] {count} objects processed...")` — in-place progress updates via carriage return
+- `Console.Error.WriteLine("[Done] {total} objects, {findings} findings, {elapsed}")` — final summary
 
 ---
 
@@ -495,13 +623,13 @@ The spec states that every object in every naming context is queried with `(obje
 - Whether scanning only specific object classes (e.g., containers, OUs, domains, and objects with explicit ACEs) could reduce the workload without sacrificing completeness
 - Whether the tool should report scan statistics (objects processed, time elapsed, ACEs analyzed)
 
-### 10.2. Memory Consumption is Not Bounded
+### 10.2. Memory Consumption is Not Bounded — Use Streaming with `StreamWriter`
 
-While the spec mentions pruning records with no findings, it does not define a memory budget or describe behavior when memory is exhausted. In .NET Framework 2.0, the default process memory limit is lower than in modern frameworks. The revised spec should consider streaming output (writing CSV records as they are produced via `StreamWriter`) rather than accumulating all results in memory. `DirectorySearcher.FindAll()` returns a `SearchResultCollection` that can be iterated one result at a time, enabling a streaming approach.
+While the spec mentions pruning records with no findings, it does not define a memory budget or describe behavior when memory is exhausted. In .NET Framework 2.0, the default process memory limit is lower than in modern frameworks. The revised spec should consider streaming output (writing CSV records as they are produced via `StreamWriter` — see Section 1.5.22) rather than accumulating all results in memory. `DirectorySearcher.FindAll()` returns a `SearchResultCollection` that can be iterated one result at a time, enabling a streaming approach. **Important .NET-specific note:** `SearchResultCollection` implements `IDisposable` — the revised spec should mandate calling `.Dispose()` (or using a `using` statement) to release unmanaged LDAP result handles, preventing memory leaks during long scans.
 
-### 10.3. SID Resolution Cache Could Grow Unbounded
+### 10.3. SID Resolution Cache Could Grow Unbounded — Use `Dictionary<string, string>` with Size Monitoring
 
-The SID resolution cache stores entries for every unique SID encountered. In a large forest, this could be hundreds of thousands of entries. The revised spec should consider whether cache eviction or size limits are needed.
+The SID resolution cache stores entries for every unique SID encountered. In a large forest, this could be hundreds of thousands of entries. In .NET Framework 2.0, the cache would be a `Dictionary<string, string>` keyed by the `SecurityIdentifier.Value` string. The revised spec should consider whether cache eviction or size limits are needed, and should define the cache behavior when memory pressure is detected (e.g., via `GC.GetTotalMemory()`).
 
 ### 10.4. No Support for Incremental or Delta Scans
 
@@ -557,21 +685,23 @@ The spec does not define a version number or provide any stability guarantees fo
 
 ## 12. Correctness and Edge Case Concerns
 
-### 12.1. ACE Canonicality Check May Produce False Positives
+### 12.1. ACL Canonicality Check Should Use `CommonAcl.IsCanonical` as Primary Detection
 
-The spec defines a non-canonical ACL as one where "a deny ACE follows an allow ACE among explicit ACEs." However, this check does not account for the nuance that in Windows ACLs, the canonical order is: explicit deny, explicit allow, inherited deny, inherited allow — but only within the same inheritance level. Two explicit ACEs may have different inheritance scopes (e.g., one applies to this object, one inherits to children), and their relative ordering may be correct even if deny follows allow across different scopes. The revised spec should define the canonicality check more precisely.
+The spec defines a non-canonical ACL as one where "a deny ACE follows an allow ACE among explicit ACEs." However, this check does not account for the nuance that in Windows ACLs, the canonical order is: explicit deny, explicit allow, inherited deny, inherited allow — but only within the same inheritance level. Two explicit ACEs may have different inheritance scopes (e.g., one applies to this object, one inherits to children), and their relative ordering may be correct even if deny follows allow across different scopes.
+
+As detailed in Section 1.5.17, .NET Framework 2.0 provides `CommonAcl.IsCanonical` (via `RawSecurityDescriptor` → `CommonSecurityDescriptor` → `.DiscretionaryAcl.IsCanonical`) which implements the Windows ACL canonicality rules correctly, accounting for inheritance scope levels. The revised spec should use this as the primary detection mechanism, supplemented by manual iteration only when a non-canonical ACL needs to identify the specific offending ACE for the warning message.
 
 ### 12.2. Creator Owner Replacement Logic Needs Clarification
 
 The spec states that when computing inherited ACEs from schema defaults, `Creator Owner` SID (`S-1-3-0`) ACEs are replaced by the object's actual owner SID, and "both the replaced and original ACEs are produced as defaults." This means that if an explicit ACE matches either the `Creator Owner` version or the owner-replaced version, it will be filtered out. But what if the object's owner has changed since creation? The ACE with the original creator's SID would no longer match the owner-replaced version. The revised spec should clarify the expected behavior in this case.
 
-### 12.3. Domain SID Detection for Non-Domain NCs is a Guess
+### 12.3. Domain SID Detection Should Use `SecurityIdentifier.AccountDomainSid`
 
-For non-domain naming contexts (schema, configuration, application partitions), the spec uses the root domain SID as a fallback for "deleted trustee" detection. This means SIDs from child domains that appear in the schema/configuration partition will not be correctly identified as deleted if they belong to a non-root domain. The revised spec should consider checking all known domain SIDs, not just the root domain.
+For non-domain naming contexts (schema, configuration, application partitions), the spec uses the root domain SID as a fallback for "deleted trustee" detection using manual SID byte manipulation. As detailed in Section 1.5.19, .NET Framework 2.0 provides `SecurityIdentifier.AccountDomainSid` which returns the domain portion of a SID (strips the RID), or `null` for well-known SIDs with no domain component. The revised spec should define deleted trustee detection as: "For each unresolvable trustee SID, extract `sid.AccountDomainSid`. If it matches any known domain SID (not just the root domain), flag the ACE as a deleted trustee." This approach is both simpler and more correct — it checks all known domain SIDs, not just the root domain, which means SIDs from child domains in the schema/configuration partition will be correctly identified as deleted.
 
-### 12.4. `adminCount` Attribute is Checked as String "0"
+### 12.4. `adminCount` Attribute Should Be Parsed as Integer via `SearchResult.Properties`
 
-The spec states that `adminCount` is checked via `adminCount != "0"`, defaulting to `"0"` if missing. Since `adminCount` is an INTEGER attribute in the AD schema, LDAP returns it as a string representation of a number. A simple string comparison against `"0"` is fragile if the attribute value is missing, corrupt, or returned in an unexpected format. The revised spec should define numeric parsing of `adminCount` and treat any nonzero integer as indicating a protected object, with graceful handling for non-numeric or absent values.
+The spec states that `adminCount` is checked via `adminCount != "0"`, defaulting to `"0"` if missing. Since `adminCount` is an INTEGER attribute in the AD schema, .NET Framework 2.0's `SearchResult.Properties["adminCount"]` returns it as an `int` (boxed in `object`), not as a string. The revised spec should define numeric handling: `int adminCount = result.Properties.Contains("adminCount") ? (int)result.Properties["adminCount"][0] : 0;` and treat any nonzero integer as indicating a protected object. This eliminates the fragile string comparison entirely.
 
 ### 12.5. Potential for Missed ACEs on Objects with Multiple Classes
 
@@ -597,9 +727,9 @@ After a scan, the tool should produce a summary of what it found: total objects 
 
 The spec scans everything in every naming context. For large environments, administrators may want to exclude specific subtrees (e.g., `OU=Workstations` with thousands of computer objects that have identical delegations). The revised spec should consider `--exclude-dn` or similar filtering options.
 
-### 13.5. Credential Handling UX
+### 13.5. Credential Handling Should Use `DirectoryEntry` Constructor and `Console.ReadKey(true)`
 
-The spec mentions `--password *` for interactive password entry and `--password <value>` for command-line password. For .NET Framework 2.0, `Console.ReadKey(true)` can implement secure password entry. The revised spec should also consider reading credentials from environment variables or a configuration file (with appropriate security warnings) as alternatives to command-line arguments.
+The spec mentions `--password *` for interactive password entry and `--password <value>` for command-line password. In .NET Framework 2.0, credentials are passed directly to the `DirectoryEntry` constructor (see Section 1.5.2): `new DirectoryEntry(path, username, password, AuthenticationTypes.Secure)`. Interactive password entry uses `Console.ReadKey(true)` in a loop to read characters without echo, building a `string` or `System.Security.SecureString`. The revised spec should also consider reading credentials from environment variables (via `Environment.GetEnvironmentVariable("ADELEG_PASSWORD")`) or a configuration file (with appropriate security warnings) as alternatives to command-line arguments.
 
 ---
 
@@ -609,9 +739,9 @@ The spec mentions `--password *` for interactive password entry and `--password 
 
 The spec correctly warns about `--password` leaking credentials via process listings. The revised spec should consider deprecating the cleartext `--password` option entirely and supporting only interactive entry (`--password *`) and SSPI/Kerberos (no password needed). If cleartext must be supported for automation, environment variable input (`ADELEG_PASSWORD`) would be less visible than a command-line argument.
 
-### 14.2. No Certificate Validation for LDAPS
+### 14.2. No Certificate Validation for LDAPS — Use `ServicePointManager` or `AuthenticationTypes.SecureSocketsLayer`
 
-If LDAPS support is added (see Section 2.4), the spec should define certificate validation behavior. In .NET Framework 2.0, the `ServicePointManager.ServerCertificateValidationCallback` can be used for custom validation, but the default behavior and any override options should be specified.
+If LDAPS support is added (see Section 2.4), the spec should define certificate validation behavior. In .NET Framework 2.0, LDAPS connections can be established by specifying `AuthenticationTypes.SecureSocketsLayer` in the `DirectoryEntry` constructor or by using port 636 in the LDAP path (e.g., `"LDAP://server:636"`). Custom certificate validation can be implemented via `ServicePointManager.ServerCertificateValidationCallback`. The revised spec should define the default behavior (validate the server certificate against the local CA trust store) and any override options (e.g., `--ignore-cert-errors` for testing environments).
 
 ### 14.3. No Audit Trail of Tool Execution
 
