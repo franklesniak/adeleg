@@ -7,7 +7,7 @@ This document provides functional and technical criticism of the specification d
 ## Table of Contents
 
 1. [Platform and Technology Coupling](#1-platform-and-technology-coupling)
-2. [LDAP Access Layer](#2-ldap-access-layer)
+2. [Residual LDAP Access Layer Concerns](#2-residual-ldap-access-layer-concerns)
 3. [.NET Framework 2.0 Constraints and Implications](#3-net-framework-20-constraints-and-implications)
 4. [Security Descriptor Parsing](#4-security-descriptor-parsing)
 5. [SID Resolution Strategy](#5-sid-resolution-strategy)
@@ -42,45 +42,227 @@ The spec refers to `builtin_delegations.json` being "embedded at compile time." 
 
 The spec mentions dynamically loading `LookupAccountSidLocalW` from `sechost.dll` via `GetProcAddress`. In .NET Framework 2.0, `System.Security.Principal.SecurityIdentifier.Translate()` or P/Invoke with `LookupAccountSid` would be more natural. The revised spec should describe the SID-to-name resolution requirement without mandating a specific OS API call mechanism.
 
-### 1.5. .NET Framework Native AD Objects Could Eliminate Granular LDAP Control
+### 1.5. .NET Framework 2.0 Native AD Objects as Functional Replacements for the Spec's LDAP Operations
 
-The spec describes Active Directory access exclusively through low-level LDAP operations: explicit connection handles, bind calls, paged search controls, referral option flags, SD flags controls, port numbers, and timeout values. If the .NET Framework rewrite uses `System.DirectoryServices` (`DirectoryEntry`, `DirectorySearcher`) or `System.DirectoryServices.ActiveDirectory` (`Domain`, `Forest`, `ActiveDirectorySchema`), many of these LDAP-level concerns are abstracted away entirely by the framework:
+The reference specification describes Active Directory access exclusively through low-level LDAP operations: explicit connection handles, bind calls, paged search controls, referral option flags, SD flags controls, port numbers, and timeout values. .NET Framework 2.0 provides managed AD APIs that functionally replace nearly all of these operations. The revised spec should be written at this higher abstraction level, specifying behaviors in terms of the .NET Framework objects that will actually be used, rather than in terms of the raw LDAP protocol operations that the Rust implementation happens to use.
 
-- **DC discovery and connection**: `Domain.GetCurrentDomain()` and `Forest.GetCurrentForest()` locate domain controllers automatically, eliminating the need for `--server` and `--port` CLI options in most cases.
-- **Paging**: `DirectorySearcher.PageSize` handles paged searches transparently — there is no need to manually create page controls or parse cookies.
-- **Referrals**: `DirectorySearcher.ReferralChasing` provides a simple enum-based configuration rather than raw `ldap_set_option` calls.
-- **Authentication**: `DirectoryEntry` constructors accept credentials and automatically use Negotiate/SSPI when none are provided, removing the need for `SEC_WINNT_AUTH_IDENTITY_W` structures.
-- **Security descriptors**: `DirectoryEntry.ObjectSecurity` returns an `ActiveDirectorySecurity` object with managed ACE access via `GetAccessRules()`, eliminating raw binary parsing.
-- **SD flags control**: `DirectorySearcher.SecurityMasks` provides a managed interface for specifying which SD components to retrieve (Owner, DACL, SACL, Group).
-- **Timeouts**: `DirectorySearcher.ClientTimeout` and `DirectorySearcher.ServerTimeLimit` replace raw `LDAP_TIMEVAL` structs.
+The following subsections map each major area of the reference specification to its .NET Framework 2.0 equivalent, identifying where the current spec's LDAP-level detail becomes unnecessary.
 
-The revised spec should seriously consider specifying behaviors at this higher abstraction level rather than at the LDAP protocol level. This would make the spec simpler, more naturally aligned with .NET Framework, and would avoid overspecifying implementation mechanics that the framework already handles. The remaining LDAP-level sections of this criticism (Section 2) may become partially or wholly moot if this approach is adopted.
+#### 1.5.1. Domain Controller Discovery and Connection (Replaces Spec §2 Connection Logic)
+
+The spec's `ldap_initW(serverName, port)` and `ldap_connect` calls are entirely replaced:
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Initialize connection to a specific server/port | `new DirectoryEntry("LDAP://serverName")` — connection is established lazily on first property access |
+| Auto-discover a DC for the current domain | `Domain.GetCurrentDomain()` returns a `Domain` object with an auto-selected DC; `Domain.FindDomainController()` for explicit DC selection |
+| Auto-discover forest-level topology | `Forest.GetCurrentForest()` returns the forest with all domains, sites, and global catalogs |
+| Specify a port number | Encoded in the LDAP path: `"LDAP://serverName:636"` for LDAPS, or `"GC://serverName"` for Global Catalog |
+| Connection timeout | `DirectorySearcher.ClientTimeout` and `DirectoryEntry.Options.Timeout` (`DirectoryEntryConfiguration`) |
+
+**Impact on the revised spec:** The `--server` and `--port` CLI options may be unnecessary for most use cases. The spec should define the tool's DC selection behavior in terms of `Domain.GetCurrentDomain()` / `Forest.GetCurrentForest()`, with an optional override for explicit server targeting. The 2-second `LDAP_TIMEVAL` concern (Spec §2) and DNS/mDNS/NBNS timeout caveat disappear — .NET Framework handles the underlying resolution internally.
+
+#### 1.5.2. Authentication (Replaces Spec §2 Bind Logic and §16 Credential Handling)
+
+The spec's `ldap_bind_sW` with `SEC_WINNT_AUTH_IDENTITY_W` structures is entirely replaced:
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Bind with current Windows SSO (Negotiate/SSPI) | `new DirectoryEntry(path)` — no credentials needed; uses the process identity automatically |
+| Bind with explicit credentials | `new DirectoryEntry(path, username, password, AuthenticationTypes.Secure)` |
+| Interactive password entry (`--password *`) | Read password via `Console.ReadKey(true)`, pass to `DirectoryEntry` constructor |
+
+**Impact on the revised spec:** The `SEC_WINNT_AUTH_IDENTITY_W` structure, `Negotiate` flag, and dynamic `sechost.dll` loading details are all moot. The spec should describe authentication requirements as: "Use the current Windows security context by default; support explicit username/password credentials via `DirectoryEntry` constructors."
+
+#### 1.5.3. RootDSE Bootstrap (Replaces Spec §1 RootDSE Section)
+
+The spec's base-scoped LDAP search on an empty DN is replaced:
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Read `namingContexts` | `new DirectoryEntry("LDAP://RootDSE").Properties["namingContexts"]` |
+| Read `schemaNamingContext` | `new DirectoryEntry("LDAP://RootDSE").Properties["schemaNamingContext"]` or `ActiveDirectorySchema.GetCurrentSchema().Name` |
+| Read `configurationNamingContext` | `new DirectoryEntry("LDAP://RootDSE").Properties["configurationNamingContext"]` |
+| Read `rootDomainNamingContext` | `new DirectoryEntry("LDAP://RootDSE").Properties["rootDomainNamingContext"]` or `Forest.GetCurrentForest().RootDomain.GetDirectoryEntry().Properties["distinguishedName"]` |
+| Read `supportedControl` | `new DirectoryEntry("LDAP://RootDSE").Properties["supportedControl"]` (but this becomes less important when the framework handles controls automatically) |
+
+**Impact on the revised spec:** The RootDSE bootstrap is straightforward in either approach. However, `.NET Framework 2.0` provides higher-level alternatives for some values (e.g., `ActiveDirectorySchema.GetCurrentSchema()` instead of reading the raw DN). The `supportedControl` check for `LDAP_SERVER_SD_FLAGS_OID` becomes unnecessary because `DirectorySearcher.SecurityMasks` handles this transparently.
+
+#### 1.5.4. Paged Search (Replaces Spec §3 Paging Section)
+
+The spec's manual page control creation (`ldap_create_page_controlW`, `ldap_parse_page_controlW`, cookie management) is entirely replaced:
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Create paged search with page size 999 | `DirectorySearcher.PageSize = 1000` (or any value ≤ AD's MaxPageSize) — paging is handled transparently |
+| Parse paging cookies and continue | Automatic — `DirectorySearcher.FindAll()` handles continuation internally |
+| Detect end of paged results | Automatic — the `SearchResultCollection` enumerator terminates when done |
+
+**Impact on the revised spec:** The entire paging section of the spec (§3) is unnecessary. The revised spec need only state: "Set `DirectorySearcher.PageSize` to a value at or below the domain's MaxPageSize policy (default 1000) to enable transparent paging."
+
+#### 1.5.5. Referral Handling (Replaces Spec §2 Referral Section)
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Disable referral chasing via `ldap_set_option(LDAP_OPT_REFERRALS, 0)` | `DirectorySearcher.ReferralChasing = ReferralChasingOption.None` |
+
+**Impact on the revised spec:** Same behavior, one line of managed code instead of a P/Invoke `ldap_set_option` call.
+
+#### 1.5.6. Schema Enumeration — Classes and Attributes (Replaces Spec §1/§2 Schema Queries)
+
+The spec performs LDAP subtree searches on the schema NC to enumerate `classSchema` and `attributeSchema` objects. .NET Framework 2.0 provides a dedicated managed API:
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Enumerate all schema classes with GUIDs and SDDL defaults | `ActiveDirectorySchema.GetCurrentSchema().FindAllClasses()` returns `ReadOnlyActiveDirectorySchemaClassCollection`; each `ActiveDirectorySchemaClass` has `.SchemaGuid` and `.DefaultObjectSecurityDescriptor` (SDDL string) |
+| Enumerate all schema attributes with GUIDs | `ActiveDirectorySchema.GetCurrentSchema().FindAllProperties()` returns `ReadOnlyActiveDirectorySchemaPropertyCollection`; each `ActiveDirectorySchemaProperty` has `.SchemaGuid` |
+| Get `lDAPDisplayName` for a class or attribute | `ActiveDirectorySchemaClass.Name` / `ActiveDirectorySchemaProperty.Name` (this is the `lDAPDisplayName`) |
+
+**Impact on the revised spec:** The schema query filters (`(objectClass=classSchema)`, `(objectClass=attributeSchema)`) and the attribute lists (`schemaIDGUID`, `lDAPDisplayName`, `defaultSecurityDescriptor`) become implementation details — the revised spec should describe the information needed (class GUIDs, attribute GUIDs, default SDDL strings) and note that `ActiveDirectorySchema` provides this natively. This is simpler, faster, and less error-prone than manual LDAP queries.
+
+#### 1.5.7. Extended Rights, Property Sets, and Validated Writes (Partially Replaced)
+
+The spec queries the Configuration NC for `controlAccessRight` objects with different `validAccesses` values. .NET Framework 2.0's `ActiveDirectorySchema` does **not** directly expose these:
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Enumerate property sets (`validAccesses=48`) | **No direct .NET equivalent** — use `DirectorySearcher` on the Configuration NC with the same LDAP filter |
+| Enumerate validated writes (`validAccesses=8`) | **No direct .NET equivalent** — use `DirectorySearcher` on the same NC |
+| Enumerate control access rights (`validAccesses=256`) | **No direct .NET equivalent** — use `DirectorySearcher` on the same NC |
+
+**Impact on the revised spec:** This is one area where `DirectorySearcher` with LDAP filters is still needed. The spec should retain these query definitions but express them in terms of `DirectorySearcher` filter/properties syntax rather than raw LDAP API calls. The `rightsGuid` and `displayName` attributes are still the relevant output.
+
+#### 1.5.8. Domain Enumeration — SIDs and NetBIOS Names (Partially Replaced)
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Enumerate domains from `CN=Partitions,{configNC}` for `nCName`/`nETBIOSName` | `Forest.GetCurrentForest().Domains` returns a `DomainCollection`; each `Domain` has `.Name` (DNS name). However, **NetBIOS name is not directly exposed** — use `DirectorySearcher` on `CN=Partitions,{configNC}` or read `Domain.GetDirectoryEntry().Properties["nETBIOSName"]` via the crossRef object |
+| Retrieve each domain's SID | `Domain.GetDirectoryEntry().Properties["objectSid"]` returns the domain SID as a byte array; parse with `new SecurityIdentifier(bytes, 0)` |
+
+**Impact on the revised spec:** Domain enumeration is partially abstracted by `Forest.Domains`, but NetBIOS names and domain SIDs still require targeted queries. The revised spec should describe the higher-level approach first (use `Forest.Domains`), then specify the supplemental queries needed for NetBIOS names and SIDs.
+
+#### 1.5.9. Security Descriptor Retrieval and SD Flags Control (Replaces Spec §3 SD Flags Section)
+
+The spec's `LDAP_SERVER_SD_FLAGS_OID` control is fully replaced:
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Send `LDAP_SERVER_SD_FLAGS_OID` requesting Owner + DACL | `DirectorySearcher.SecurityMasks = SecurityMasks.Owner \| SecurityMasks.Dacl` |
+| Retrieve only DACL for AdminSDHolder | `DirectorySearcher.SecurityMasks = SecurityMasks.Dacl` |
+| Parse raw SD binary from `nTSecurityDescriptor` | `SearchResult.GetDirectoryEntry().ObjectSecurity` returns `ActiveDirectorySecurity`, **or** read `nTSecurityDescriptor` as `byte[]` and parse with `new RawSecurityDescriptor(bytes, 0)` |
+
+**Impact on the revised spec:** The SD flags OID, the control creation code, and the binary parsing details are all unnecessary. The revised spec should state: "Configure `DirectorySearcher.SecurityMasks` to request only the needed SD components, then access the SD via `ActiveDirectorySecurity` or `RawSecurityDescriptor`."
+
+#### 1.5.10. ACE Extraction and Inherited ACE Filtering (Replaces Spec §4 and §5)
+
+The spec describes manual byte-level ACE parsing and an explicit `is_inherited()` flag check. .NET Framework 2.0 replaces both:
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Parse ACE types byte-by-byte via `GetAce` | `ActiveDirectorySecurity.GetAccessRules()` returns `AuthorizationRuleCollection` of `ActiveDirectoryAccessRule` objects |
+| Check `INHERITED_ACE` flag manually | `GetAccessRules(includeExplicit: true, includeInherited: false, ...)` — pass `false` for `includeInherited` to get only explicit ACEs directly |
+| Extract ACE type (Allow/Deny) | `ActiveDirectoryAccessRule.AccessControlType` (enum: `Allow`, `Deny`) |
+| Extract access mask | `ActiveDirectoryAccessRule.ActiveDirectoryRights` (flags enum: `CreateChild`, `DeleteChild`, `WriteProperty`, `ExtendedRight`, `Delete`, `WriteDacl`, `WriteOwner`, etc.) |
+| Extract `object_type` GUID | `ActiveDirectoryAccessRule.ObjectType` (returns `Guid`) |
+| Extract `inherited_object_type` GUID | `ActiveDirectoryAccessRule.InheritedObjectType` (returns `Guid`) |
+| Extract inheritance flags | `ActiveDirectoryAccessRule.InheritanceFlags` (enum: `ContainerInherit`, `ObjectInherit`) and `.PropagationFlags` (`InheritOnly`, `NoPropagateInherit`) |
+| Extract trustee SID | `ActiveDirectoryAccessRule.IdentityReference` (returns `IdentityReference`, castable to `SecurityIdentifier`) |
+| Extract ACE header flags | `ActiveDirectoryAccessRule.InheritanceFlags` and `.PropagationFlags` cover the relevant flag bits; `.IsInherited` for the `INHERITED_ACE` flag |
+
+**Impact on the revised spec:** The entire ACE parsing section (§4) and the inherited/explicit detection section (§5) can be replaced with: "Call `ActiveDirectorySecurity.GetAccessRules(true, false, typeof(SecurityIdentifier))` to retrieve only explicit ACEs as `ActiveDirectoryAccessRule` objects. Each rule exposes the access type, rights, object GUIDs, inheritance flags, and trustee SID as typed properties." The 13 ACE types enumerated in the spec are handled transparently — .NET Framework parses them and exposes them through the same `ActiveDirectoryAccessRule` class. Callback ACE types are a notable exception: `GetAccessRules()` may not return callback ACEs with their conditional expressions, which the revised spec should address.
+
+#### 1.5.11. SDDL Parsing for Schema Defaults (Replaces Spec §4.2)
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Parse SDDL via `ConvertStringSecurityDescriptorToSecurityDescriptorW` then binary parse | `new RawSecurityDescriptor(sddlString)` — the constructor accepts SDDL directly; `.DiscretionaryAcl` provides ACE access |
+
+**Impact on the revised spec:** One constructor call replaces the two-step (SDDL → binary → parsed) approach. The revised spec should state: "Parse schema `defaultSecurityDescriptor` SDDL strings using `RawSecurityDescriptor(string)` and enumerate the resulting `DiscretionaryAcl` for default ACEs."
+
+#### 1.5.12. SID Resolution (Replaces Spec §7)
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| `LookupAccountSidLocalW` via dynamic `GetProcAddress` from `sechost.dll` | `SecurityIdentifier.Translate(typeof(NTAccount))` — returns an `NTAccount` with `Value` in `DOMAIN\Username` format; throws `IdentityNotMappedException` on failure |
+| LDAP SID-based lookup via `<SID=S-1-5-...>` synthetic DN | `new DirectoryEntry("LDAP://<SID=" + sid.Value + ">")` then `.Properties["distinguishedName"]` and `.Properties["objectClass"]` |
+| Cache resolved SIDs | `Dictionary<SecurityIdentifier, string>` (or a custom cache class) — semantics are application-level, not API-level |
+
+**Impact on the revised spec:** The `GetProcAddress`/`sechost.dll` dynamic loading and `SID_NAME_USE` enum mapping are unnecessary. The revised spec should define SID resolution as: "Attempt `SecurityIdentifier.Translate(typeof(NTAccount))` for local resolution; fall back to LDAP `<SID=...>` lookup via `DirectoryEntry`; cache results in a `Dictionary<string, string>` keyed by SID string."
+
+#### 1.5.13. Owner Retrieval (Replaces Part of Spec §4)
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| `GetSecurityDescriptorOwner` on raw binary SD | `ActiveDirectorySecurity.GetOwner(typeof(SecurityIdentifier))` returns the owner as a `SecurityIdentifier` directly |
+
+#### 1.5.14. AdminSDHolder DACL Retrieval
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| LDAP base search at `CN=AdminSDHolder,CN=System,<domainDN>` for `nTSecurityDescriptor` (DACL only) | `new DirectoryEntry("LDAP://CN=AdminSDHolder,CN=System," + domainDN)` then `.ObjectSecurity.GetAccessRules(true, false, typeof(SecurityIdentifier))` |
+
+#### 1.5.15. Main Scan — Subtree Search of All Objects (Approach Remains Similar)
+
+The spec's `(objectClass=*)` subtree search is the core scanning operation. While `DirectorySearcher` replaces the raw LDAP calls, the logical operation remains the same:
+
+| Spec Behavior | .NET Framework 2.0 Replacement |
+|---|---|
+| Subtree search with `(objectClass=*)` | `DirectorySearcher.Filter = "(objectClass=*)"`, `.SearchScope = SearchScope.Subtree` |
+| Request specific attributes | `DirectorySearcher.PropertiesToLoad.AddRange(new[] { "nTSecurityDescriptor", "objectClass", "objectSID", "adminCount", "msDS-KrbTgtLinkBl", "serverReference" })` |
+| Process results one at a time | `DirectorySearcher.FindAll()` returns `SearchResultCollection`; iterate with `foreach` |
+
+**Impact on the revised spec:** The query logic is the same, but expressed through `DirectorySearcher` properties instead of raw LDAP API calls. The key difference is that `DirectorySearcher.PageSize` handles paging transparently, and `SecurityMasks` replaces the manual SD flags control. The revised spec should describe this scan in terms of `DirectorySearcher` configuration.
+
+#### 1.5.16. Summary of Replacement Coverage
+
+| Spec Area | Fully Replaced by .NET Framework 2.0? | Notes |
+|---|---|---|
+| DC discovery and connection | ✅ Yes | `Domain.GetCurrentDomain()`, `DirectoryEntry` |
+| Authentication and binding | ✅ Yes | `DirectoryEntry` constructor with credentials |
+| Paged search controls | ✅ Yes | `DirectorySearcher.PageSize` |
+| Referral handling | ✅ Yes | `DirectorySearcher.ReferralChasing` |
+| SD flags control | ✅ Yes | `DirectorySearcher.SecurityMasks` |
+| Security descriptor parsing | ✅ Yes | `ActiveDirectorySecurity`, `RawSecurityDescriptor` |
+| ACE extraction and type handling | ✅ Yes | `GetAccessRules()` returns typed `ActiveDirectoryAccessRule` objects |
+| Inherited vs. explicit ACE filtering | ✅ Yes | `GetAccessRules(includeExplicit, includeInherited, ...)` parameter |
+| SDDL parsing | ✅ Yes | `RawSecurityDescriptor(string)` constructor |
+| SID resolution (local) | ✅ Yes | `SecurityIdentifier.Translate(typeof(NTAccount))` |
+| SID resolution (LDAP) | ✅ Yes | `DirectoryEntry("LDAP://<SID=...>")` |
+| Owner retrieval | ✅ Yes | `ActiveDirectorySecurity.GetOwner()` |
+| Schema class/attribute enumeration | ✅ Yes | `ActiveDirectorySchema.FindAllClasses()` / `FindAllProperties()` |
+| RootDSE bootstrap | ✅ Yes | `DirectoryEntry("LDAP://RootDSE")` |
+| Connection timeouts | ✅ Yes | `DirectorySearcher.ClientTimeout`, `DirectoryEntry.Options` |
+| Extended rights / property sets / validated writes | ⚠️ Partial | Still need `DirectorySearcher` on Configuration NC — no managed schema API for these |
+| Domain NetBIOS names | ⚠️ Partial | `Forest.Domains` provides DNS names; NetBIOS requires supplemental query |
+| Callback ACE conditional expressions | ❌ Not addressed | `GetAccessRules()` may not expose callback conditionals — same limitation as current spec |
+
+**Conclusion for the revised spec:** 14 of 17 major LDAP operation areas are fully replaced by .NET Framework 2.0 managed APIs. The revised spec should be written in terms of these managed APIs, not in terms of raw LDAP operations. The spec's entire Section 2 (Directory Query Mechanics), Section 3 (Paging), and most of Section 4 (SD Parsing) should be replaced by .NET Framework 2.0-native descriptions. The remaining LDAP-level concerns in Section 2 of this criticism document are retained only for the three partially-replaced areas and as fallback considerations.
 
 ---
 
-## 2. LDAP Access Layer
+## 2. Residual LDAP Access Layer Concerns
 
-> **Note:** As discussed in Section 1.5, many of these LDAP-level concerns may be rendered moot if the revised spec adopts .NET Framework native AD objects (`System.DirectoryServices`) instead of specifying raw LDAP operations. The criticisms below remain relevant if the spec retains LDAP-level granularity, or as fallback considerations for edge cases that .NET Framework abstractions may not cover.
+> **Context:** Section 1.5 demonstrates that 14 of 17 major LDAP operation areas in the reference spec are fully replaced by .NET Framework 2.0 managed APIs. The criticisms below address the **three partially-replaced areas** (extended rights enumeration, domain NetBIOS names, callback ACEs) and edge cases where the .NET Framework abstractions may need supplementation. If the revised spec is written at the .NET Framework abstraction level as recommended, most of these points become implementation notes rather than spec-level concerns.
 
-### 2.1. Connection Timeout Semantics Are Unclear
+### 2.1. Connection Timeout Semantics Are Unclear (Largely Moot with .NET Framework)
 
-The spec states a 2-second `LDAP_TIMEVAL` for `ldap_connect`, but then immediately adds a caveat that the "overall connection attempt may exceed 2 seconds due to underlying DNS/mDNS/NBNS resolution layers." This is confusing. The revised spec should define the desired timeout behavior in terms of the overall user-visible behavior: what is the maximum acceptable time before the tool reports a connection failure? Should DNS resolution timeout be separately configurable?
+The spec states a 2-second `LDAP_TIMEVAL` for `ldap_connect`, but then immediately adds a caveat that the "overall connection attempt may exceed 2 seconds due to underlying DNS/mDNS/NBNS resolution layers." With .NET Framework 2.0, `DirectorySearcher.ClientTimeout` and `DirectoryEntry.Options.Timeout` replace this — the framework handles DNS resolution internally. The revised spec should simply define the maximum acceptable wall-clock time before the tool reports a connection failure, expressed as a `ClientTimeout` value rather than a raw `LDAP_TIMEVAL`.
 
-### 2.2. Referral Disabling Rationale is Good but Incomplete
+### 2.2. Referral Disabling Rationale is Good but Expression Should Use .NET API
 
-The spec correctly disables referrals to prevent hanging when running outside the domain, but does not discuss the implications: disabling referrals means the tool will not automatically follow cross-domain references within the same forest. If a naming context references objects in another domain, those objects will not be resolved — the LDAP client will receive referral responses that go unfollowed, which depending on the API layer may surface as errors or simply as missing results. The revised spec should explicitly state whether cross-domain references within a forest should be followed (and if so, how to handle authentication for them), or whether unfollowed referrals are acceptable and how they should be reported.
+The spec correctly disables referrals to prevent hanging when running outside the domain, but expresses this through `ldap_set_option(LDAP_OPT_REFERRALS, 0)`. In .NET Framework 2.0, the equivalent is `DirectorySearcher.ReferralChasing = ReferralChasingOption.None` — a single property assignment. The underlying concern remains valid: disabling referrals means the tool will not automatically follow cross-domain references within the same forest. If a naming context references objects in another domain, those objects will not be resolved — the LDAP client will receive referral responses that go unfollowed, which depending on the API layer may surface as errors or simply as missing results. The revised spec should state the referral policy in terms of `ReferralChasingOption` and explicitly define whether cross-domain references within a forest should be followed or whether unfollowed referrals are acceptable and how they should be reported.
 
-### 2.3. Page Size of 999 Should Be Justified or Configurable
+### 2.3. Page Size Should Be Justified or Configurable (Simplified by .NET)
 
-The page size of 999 is stated as a fixed constant without justification. The default AD MaxPageSize policy is 1000. Using 999 presumably stays under this limit, but the spec does not explain this. The revised spec should either justify this choice or make it configurable. Some environments have custom MaxPageSize policies, and a fixed value of 999 may not be optimal everywhere.
+The page size of 999 is stated as a fixed constant without justification. With .NET Framework 2.0, paging is handled by setting `DirectorySearcher.PageSize` — no manual cookie management is needed. The default AD MaxPageSize policy is 1000, and any value ≤ 1000 will work. The revised spec should simply state the `PageSize` value to use (e.g., 1000), justify the choice relative to the AD policy default, and note that environments with custom MaxPageSize policies may require a different value.
 
 ### 2.4. No Support for LDAPS or StartTLS
 
 The spec does not mention encrypted LDAP connections (LDAPS on port 636 or StartTLS). While Negotiate/SPNEGO provides signing and sealing by default, in environments that require channel binding or TLS-only policies, this could be a limitation. The revised spec should explicitly state whether encrypted transport is supported and, if so, how (port selection, certificate validation, etc.).
 
-### 2.5. No Specification for Connection Endpoints or Alternative Ports
+### 2.5. Connection Endpoints Are Largely Moot with .NET Framework
 
-The spec does not document how the LDAP connection endpoint is determined — it does not specify a default port, CLI options for overriding the port, or support for LDAPS (port 636) or Global Catalog (ports 3268/3269). The existing implementation supports `--port` (defaulting to 389), but this is not captured in the spec. The revised spec should clarify what connection endpoints are supported and what protocol differences alternative ports imply (e.g., Global Catalog returns partial attribute sets). However, see Section 1.5 — if the revised spec uses .NET Framework native AD objects, port selection and protocol handling may be abstracted away entirely.
+The spec does not document how the LDAP connection endpoint is determined — it does not specify a default port, CLI options for overriding the port, or support for LDAPS (port 636) or Global Catalog (ports 3268/3269). With .NET Framework 2.0, `Domain.GetCurrentDomain()` and `Forest.GetCurrentForest()` handle DC discovery automatically. LDAPS is supported via path syntax (`"LDAP://server:636"`), and Global Catalog access uses the `GC://` provider (`"GC://server"`). The revised spec should define connection behavior in terms of these .NET Framework constructs rather than raw port numbers, and should specify whether Global Catalog queries (which return partial attribute sets) are useful for any of the tool's operations.
 
 ---
 
@@ -102,9 +284,9 @@ The spec does not document how the LDAP connection endpoint is determined — it
 
 .NET Framework 2.0 has `StringBuilder` but lacks `string.IsNullOrWhiteSpace()` (introduced in .NET 4.0) and other modern string utilities. The spec should not rely on specific string manipulation APIs, but rather describe the string-processing requirements clearly enough that they can be implemented with basic string operations.
 
-### 3.5. Security Descriptor API Availability
+### 3.5. Security Descriptor APIs Are Available and Should Be the Default Approach
 
-.NET Framework 2.0 includes `System.Security.AccessControl` and `System.DirectoryServices`, which provide managed access to security descriptors. However, the class `ActiveDirectorySecurity` and its `GetAccessRules()` method are available in .NET Framework 2.0, making managed SD parsing possible without P/Invoke. The revised spec should describe the parsing requirements in terms of what information is needed (owner, DACL, individual ACEs with their types, flags, access masks, and object GUIDs) without mandating raw binary parsing via Windows API calls.
+.NET Framework 2.0 includes `System.Security.AccessControl` and `System.DirectoryServices`, which provide full managed access to security descriptors. `ActiveDirectorySecurity` (from `DirectoryEntry.ObjectSecurity`) and `RawSecurityDescriptor` (from `System.Security.AccessControl`) are both available, making managed SD parsing the natural approach. As detailed in Section 1.5.9–1.5.13, the revised spec should describe SD processing exclusively through these managed APIs: `ActiveDirectorySecurity.GetAccessRules()` for ACE enumeration, `ActiveDirectorySecurity.GetOwner()` for owner retrieval, and `RawSecurityDescriptor(string)` for SDDL parsing. The Windows API calls (`IsValidSecurityDescriptor`, `GetSecurityDescriptorOwner`, `GetAce`, etc.) described in the reference spec should not appear in the revised spec.
 
 ### 3.6. JSON Parsing
 
@@ -116,13 +298,15 @@ The revised spec should address this as a design decision. Options include: spec
 
 ## 4. Security Descriptor Parsing
 
-### 4.1. Binary Parsing vs. Managed API
+### 4.1. Binary Parsing is Unnecessary — Use Managed APIs
 
-The spec describes parsing security descriptors from raw binary blobs using Windows API calls (`IsValidSecurityDescriptor`, `GetSecurityDescriptorControl`, `GetSecurityDescriptorOwner`, `GetSecurityDescriptorDacl`, etc.) and parsing ACEs byte-by-byte with `GetAce`. In .NET Framework 2.0, `System.DirectoryServices` returns security descriptors as `ActiveDirectorySecurity` objects (a subclass of `ObjectSecurity`) which provide managed access to ACEs through `GetAccessRules()` and `GetAuditRules()`. Using these managed APIs would be safer and more idiomatic. The revised spec should describe the information to extract without mandating low-level binary parsing.
+The spec describes parsing security descriptors from raw binary blobs using Windows API calls (`IsValidSecurityDescriptor`, `GetSecurityDescriptorControl`, `GetSecurityDescriptorOwner`, `GetSecurityDescriptorDacl`, etc.) and parsing ACEs byte-by-byte with `GetAce`. As detailed in Section 1.5.10, .NET Framework 2.0 provides `ActiveDirectorySecurity.GetAccessRules(true, false, typeof(SecurityIdentifier))` which returns typed `ActiveDirectoryAccessRule` objects with all relevant properties (access type, rights, object GUIDs, inheritance flags, trustee SID) already parsed. The revised spec should describe ACE processing in terms of `ActiveDirectoryAccessRule` properties, not in terms of raw binary structures or Windows API calls.
 
-### 4.2. SDDL Parsing for Schema Defaults
+For cases where `ActiveDirectorySecurity` is not directly available (e.g., reading the SD as a byte array from a `SearchResult`), `new RawSecurityDescriptor(bytes, 0)` provides a parsed SD with `.DiscretionaryAcl` access, and individual ACEs can be examined through `CommonAce` and `ObjectAce` types in `System.Security.AccessControl`.
 
-The spec mentions parsing SDDL strings from schema `defaultSecurityDescriptor` attributes using `ConvertStringSecurityDescriptorToSecurityDescriptorW`. In .NET Framework 2.0, the `RawSecurityDescriptor` class (in `System.Security.AccessControl`) can parse SDDL strings via its constructor `RawSecurityDescriptor(string)`. The revised spec should describe the requirement (parse SDDL strings into structured security descriptors) without mandating a specific API.
+### 4.2. SDDL Parsing Should Use `RawSecurityDescriptor(string)`
+
+The spec mentions parsing SDDL strings from schema `defaultSecurityDescriptor` attributes using `ConvertStringSecurityDescriptorToSecurityDescriptorW`. As detailed in Section 1.5.11, .NET Framework 2.0 provides `RawSecurityDescriptor(string)` which accepts SDDL directly. The resulting `.DiscretionaryAcl` provides ACE enumeration through `CommonAce` and `ObjectAce` types. The revised spec should describe this requirement as: "Parse `defaultSecurityDescriptor` SDDL strings using `RawSecurityDescriptor(string)` and enumerate the resulting `DiscretionaryAcl`."
 
 ### 4.3. Callback ACE Handling is Underspecified
 
@@ -136,25 +320,26 @@ The spec lists 13 ACE types that are handled, but does not mention `ACCESS_ALLOW
 
 ## 5. SID Resolution Strategy
 
-### 5.1. Resolution Order and Cache Semantics Are Overly Complex
+### 5.1. Resolution Should Use .NET Native APIs with a Simple Cache
 
-Section 7 of the spec describes a multi-step SID resolution strategy with nuanced cache population rules that differ based on whether a SID is domain-specific or not. The cache is populated from three different paths (main scan, local resolution, LDAP lookup) with different overwrite semantics for each. This complexity is a source of bugs and is difficult to test. The revised spec should simplify this by defining a clear, unambiguous resolution priority:
+Section 7 of the spec describes a multi-step SID resolution strategy with nuanced cache population rules that differ based on whether a SID is domain-specific or not. The cache is populated from three different paths (main scan, local resolution, LDAP lookup) with different overwrite semantics for each. This complexity is a source of bugs and is difficult to test.
 
-1. Cache lookup
-2. Well-known SID table (a static mapping of common SIDs to names)
-3. LDAP lookup via SID-based DN
-4. Local API lookup (e.g., `LookupAccountSid`)
-5. Raw SID string as fallback
+With .NET Framework 2.0, the resolution mechanism is simpler. The revised spec should define a clear, unambiguous resolution priority using native .NET APIs:
 
-The cache should have simple "first write wins" or "last write wins" semantics, not the current mixed approach.
+1. Cache lookup (`Dictionary<string, string>` keyed by SID string)
+2. `SecurityIdentifier.Translate(typeof(NTAccount))` — resolves well-known and domain SIDs to `DOMAIN\Username` format without requiring P/Invoke or dynamic `GetProcAddress` calls
+3. LDAP lookup via `new DirectoryEntry("LDAP://<SID=" + sid.Value + ">")` — retrieves the DN and `objectClass` for type determination
+4. Raw SID string as fallback
 
-### 5.2. `LookupAccountSidLocalW` May Not Be Available in All Contexts
+The cache should have simple "first write wins" semantics (once resolved, a SID's mapping is stable for the duration of the run). The main scan's `objectSid` values can pre-populate the cache with SID → DN mappings for domain-specific SIDs, but `Translate()` results should not be overwritten by DN-based lookups (or vice versa) — whichever resolution succeeds first should be retained.
 
-The spec relies on `LookupAccountSidLocalW` for resolving well-known SIDs. In .NET Framework 2.0, the equivalent is `SecurityIdentifier.Translate(typeof(NTAccount))`. However, this may fail in cross-forest or workgroup scenarios. The revised spec should define the expected behavior when local SID resolution is unavailable (e.g., when running the tool on a non-domain-joined machine or in a cross-forest context).
+### 5.2. `SecurityIdentifier.Translate()` Replaces `LookupAccountSidLocalW`
 
-### 5.3. Cache Field Name is Misleading
+The spec relies on dynamically loading `LookupAccountSidLocalW` from `sechost.dll` via `GetProcAddress`. In .NET Framework 2.0, `SecurityIdentifier.Translate(typeof(NTAccount))` provides the same functionality without P/Invoke. This method throws `IdentityNotMappedException` on failure, which is cleaner than checking Win32 error codes. The revised spec should define SID-to-name resolution exclusively through `SecurityIdentifier.Translate()` and document the expected behavior when translation fails (e.g., cross-forest SIDs, workgroup scenarios, non-domain-joined machines).
 
-The spec itself notes that `resolved_sid_to_dn` stores either a DN or a `DOMAIN\Username` string, which makes the name misleading. The revised spec should define a clear "resolved SID display name" concept that can be either a DN or a `DOMAIN\Username` format, and name it accordingly.
+### 5.3. Cache Should Store a Typed Resolution Result
+
+The spec itself notes that `resolved_sid_to_dn` stores either a DN or a `DOMAIN\Username` string, which makes the name misleading. In the .NET Framework 2.0 rewrite, the cache should store a typed resolution result (e.g., a simple class with `DisplayName` and `ResolutionSource` properties) rather than an untyped string. This makes it clear whether a cached value came from `SecurityIdentifier.Translate()` (producing `DOMAIN\Username`) or from a `DirectoryEntry` LDAP lookup (producing a DN).
 
 ### 5.4. Principal Type Resolution Has Gaps
 
@@ -312,7 +497,7 @@ The spec states that every object in every naming context is queried with `(obje
 
 ### 10.2. Memory Consumption is Not Bounded
 
-While the spec mentions pruning records with no findings, it does not define a memory budget or describe behavior when memory is exhausted. In .NET Framework 2.0, the default process memory limit is lower than in modern frameworks. The revised spec should consider streaming output (writing CSV records as they are produced) rather than accumulating all results in memory.
+While the spec mentions pruning records with no findings, it does not define a memory budget or describe behavior when memory is exhausted. In .NET Framework 2.0, the default process memory limit is lower than in modern frameworks. The revised spec should consider streaming output (writing CSV records as they are produced via `StreamWriter`) rather than accumulating all results in memory. `DirectorySearcher.FindAll()` returns a `SearchResultCollection` that can be iterated one result at a time, enabling a streaming approach.
 
 ### 10.3. SID Resolution Cache Could Grow Unbounded
 
@@ -339,14 +524,18 @@ The spec focuses exclusively on CSV export. Since the new tool will have no GUI,
 
 The spec describes `--show-raw` behavior for CSV output (raw constant names and hex values) but does not clearly define how raw mode affects console text output. The revised spec should define both outputs.
 
-### 11.3. LDAP Server/Domain Controller Discovery is Not Specified
+### 11.3. LDAP Server/Domain Controller Discovery Should Use .NET Framework Native APIs
 
-The spec does not document how the tool determines which domain controller to connect to. The existing implementation supports a `--server` CLI option and has automatic DC discovery logic, but neither behavior is captured in the spec. The revised spec should define:
+The spec does not document how the tool determines which domain controller to connect to. The existing Rust implementation supports a `--server` CLI option and has automatic DC discovery logic, but neither behavior is captured in the spec.
 
-- How the tool discovers a domain controller when no explicit server is specified (e.g., via .NET Framework's `System.DirectoryServices.ActiveDirectory.Domain.GetCurrentDomain()`, DNS SRV records, or `DsGetDcName`)
-- What happens when discovery fails
-- Whether the tool should support connecting to a specific site's DC
-- Whether explicit server specification should even be needed if .NET Framework native AD objects handle DC location automatically (see Section 1.5)
+With .NET Framework 2.0, DC discovery is a solved problem. The revised spec should define the default behavior as:
+
+- Use `Domain.GetCurrentDomain()` to discover the current domain and auto-select a DC — no CLI option needed for the common case
+- Use `Forest.GetCurrentForest()` for forest-level topology discovery
+- Support an optional `--server` override for targeting a specific DC (expressed as `new DirectoryEntry("LDAP://specificServer/...")`)
+- Define failure behavior when `Domain.GetCurrentDomain()` throws `ActiveDirectoryObjectNotFoundException` (e.g., non-domain-joined machine)
+
+This approach eliminates the need for raw `DsGetDcName` P/Invoke calls or DNS SRV record parsing.
 
 ### 11.4. No Specification for Encoding of DN Strings
 
