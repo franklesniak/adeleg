@@ -92,7 +92,9 @@ The spec mentions a default port of 389 with a `--port` option, but does not dis
 
 ### 3.6. JSON Parsing
 
-.NET 2.0 does not include a built-in JSON parser. `System.Text.Json` arrived in .NET Core 3.0, and `System.Web.Script.Serialization.JavaScriptSerializer` is only available when referencing `System.Web.Extensions` (which was part of ASP.NET AJAX Extensions, available separately for .NET 2.0 but not always present). The revised spec should either specify a JSON format that can be parsed with a simple hand-written parser, consider using XML instead (which .NET 2.0 handles natively via `System.Xml`), or explicitly require a third-party JSON library (e.g., Newtonsoft.Json, whose early versions supported .NET 2.0). This is a significant design decision that the spec should address.
+.NET 2.0 does not include a built-in JSON parser. `System.Text.Json` arrived in .NET Core 3.0. `System.Web.Script.Serialization.JavaScriptSerializer` is only available when referencing `System.Web.Extensions`, which was part of ASP.NET AJAX Extensions and may not be present in all .NET 2.0 installations.
+
+The revised spec should address this as a design decision. Options include: specifying a JSON format simple enough for a hand-written parser, using XML instead (natively supported in .NET 2.0 via `System.Xml`), or explicitly requiring a third-party JSON library (e.g., Newtonsoft.Json, whose early versions supported .NET 2.0).
 
 ---
 
@@ -246,9 +248,9 @@ The spec describes wildcard patterns for delegation locations (`DC=*`, `CN=Confi
 
 The spec describes matching orphan ACEs against expected delegation ACEs, but does not describe what happens when an ACE matches a delegation but with additional rights. For example, if a delegation expects `WRITE_PROP` for attribute X, but the actual ACE grants `WRITE_PROP | DELETE` for attribute X, is this a match? A partial match? The revised spec should clarify the matching semantics for superset/subset access masks.
 
-### 8.5. `access_mask` in Templates Uses Magic Numbers
+### 8.5. `access_mask` in Delegation/Template Definitions Uses Magic Numbers
 
-The template JSON uses raw numeric access masks (e.g., `196823`, `131220`, `983551`) without explanation. The revised spec should either define symbolic constants for these values or require the template format to use symbolic names that the tool resolves at load time.
+The spec describes delegation and template definitions that use raw numeric `access_mask` values (the spec itself uses values like `48`, `8`, and `256` for `validAccesses` in LDAP filters, and the delegation JSON format uses numeric `access_mask` fields). Raw numeric access masks are opaque and error-prone for human authors. The revised spec should either define symbolic constants for these values (mirroring the human-readable names in Section 8's access mask mapping table) or require the template/delegation format to use symbolic names that the tool resolves at load time.
 
 ---
 
@@ -363,7 +365,7 @@ For non-domain naming contexts (schema, configuration, application partitions), 
 
 ### 12.4. `adminCount` Attribute is Checked as String "0"
 
-The spec states that `adminCount` is checked via `adminCount != "0"`, defaulting to `"0"` if missing. This string comparison may be fragile — what about values like `"00"`, `" 0"`, or `"FALSE"`? The revised spec should define numeric parsing of `adminCount` and treat any nonzero integer as indicating a protected object.
+The spec states that `adminCount` is checked via `adminCount != "0"`, defaulting to `"0"` if missing. Since `adminCount` is an INTEGER attribute in the AD schema, LDAP returns it as a string representation of a number. A simple string comparison against `"0"` is fragile if the attribute value is missing, corrupt, or returned in an unexpected format. The revised spec should define numeric parsing of `adminCount` and treat any nonzero integer as indicating a protected object, with graceful handling for non-numeric or absent values.
 
 ### 12.5. Potential for Missed ACEs on Objects with Multiple Classes
 
