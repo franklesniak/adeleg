@@ -110,7 +110,6 @@ The tool should default to using `Domain.GetCurrentDomain()` for DC discovery (w
 | All naming contexts (main scan) | `(objectClass=*)` | `nTSecurityDescriptor`, `objectClass`, `objectSid`, `adminCount`, `msDS-KrbTgtLinkBl`, `serverReference` |
 | AdminSDHolder | `(objectClass=*)` | `nTSecurityDescriptor` |
 | Domain enumeration (partitions) | `(&(objectClass=crossRef)(nCName=*)(nETBIOSName=*))` | `nCName`, `nETBIOSName` |
-| Domain enumeration (SID) | `(objectSid=*)` | `objectSid` |
 
 Schema classes and attributes are enumerated via `ActiveDirectorySchema.GetCurrentSchema().FindAllClasses()` and `FindAllProperties()` respectively, rather than via direct LDAP queries. Each `ActiveDirectorySchemaClass` provides `.SchemaGuid`, `.Name` (the `lDAPDisplayName`), and `.DefaultObjectSecurityDescriptor` (SDDL string). Each `ActiveDirectorySchemaProperty` provides `.SchemaGuid` and `.Name`.
 
@@ -250,6 +249,8 @@ The object owner is retrieved via:
 ```csharp
 SecurityIdentifier owner = (SecurityIdentifier)security.GetOwner(typeof(SecurityIdentifier));
 ```
+
+> **Note:** `GetOwner()` requires that the security descriptor was retrieved with `SecurityMasks.Owner` included (as in the main scan's `SecurityMasks.Owner | SecurityMasks.Dacl`). When only `SecurityMasks.Dacl` was requested (e.g., for AdminSDHolder), the Owner field is not present in the retrieved bytes and `GetOwner()` should not be called.
 
 ### Callback ACE Handling
 
