@@ -199,10 +199,10 @@ security.SetSecurityDescriptorBinaryForm(sdBytes);
 
 ### ACE Extraction
 
-ACEs are retrieved via:
+ACEs are retrieved from the `ActiveDirectorySecurity` instance constructed from the binary `nTSecurityDescriptor` (see "Security Descriptor Retrieval" above):
 
 ```csharp
-ActiveDirectorySecurity security = entry.ObjectSecurity;
+// 'security' is the ActiveDirectorySecurity built from nTSecurityDescriptor bytes
 AuthorizationRuleCollection rules = security.GetAccessRules(
     true,   // includeExplicit
     false,  // includeInherited
@@ -210,7 +210,7 @@ AuthorizationRuleCollection rules = security.GetAccessRules(
 );
 ```
 
-Passing `false` for `includeInherited` retrieves only explicit ACEs directly, replacing the manual `INHERITED_ACE` flag check.
+Passing `false` for `includeInherited` retrieves only explicit ACEs directly, replacing the manual `INHERITED_ACE` flag check. The `security` variable here refers to the `ActiveDirectorySecurity` object populated via `SetSecurityDescriptorBinaryForm()` from the `nTSecurityDescriptor` byte array — **not** from `entry.ObjectSecurity`, which would force an additional LDAP round-trip per result.
 
 Each `ActiveDirectoryAccessRule` exposes:
 
@@ -581,7 +581,7 @@ When `ContainerInherit` is not set, no inheritance scope text is included.
 ### Step 6: Post-Processing
 
 1. **Memory optimization**: Remove records with no findings (no orphan ACEs, no owner issues, no warnings), but retain parent container records needed for CREATE_CHILD analysis.
-2. **Deleted trustee detection**: For each naming context, determine the associated domain SID (from the known domain NC list) or the root domain SID for non-domain naming contexts. For each unresolvable orphan ACE trustee, check `SecurityIdentifier.AccountDomainSid` — if it matches any known domain SID, move the ACE to the deleted trustee list.
+2. **Deleted trustee detection**: For each unresolvable orphan ACE trustee across all naming contexts, check `SecurityIdentifier.AccountDomainSid` — if it matches **any** known domain SID (collected from all known domain NCs), move the ACE to the deleted trustee list. See Section 7 ("Deleted Trustee Detection") for the full algorithm.
 3. **KDS root key handling**: Suppress DACL protection warnings for KDS root key objects in the Configuration partition.
 4. **Owner analysis via CREATE_CHILD**: For each object with a non-ignored owner, walk up the container hierarchy checking if the owner has `CreateChild` permissions — if so, suppress the owner finding (the owner created the object). Group membership for this check uses the `tokenGroups` constructed attribute via `DirectoryEntry.RefreshCache(new string[] { "tokenGroups" })`, which resolves transitive/nested group memberships.
 5. **Parent object ACE suppression**: Remove ACEs whose trustees are parent objects (e.g., computers controlling their own BitLocker recovery objects).
