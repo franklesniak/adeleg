@@ -18,9 +18,9 @@
 10. [CSV Export Structure](#10-csv-export-structure)
 11. [Delegation and Template System](#11-delegation-and-template-system)
 12. [Handling of Special or Edge Cases](#12-handling-of-special-or-edge-cases)
-13. [Performance and Scalability Considerations](#13-performance-and-scalability-considerations)
-14. [Error Handling and Fault Tolerance](#14-error-handling-and-fault-tolerance)
-15. [Assumptions and Limitations](#15-assumptions-and-limitations)
+13. [Performance and Scalability Considerations](#13-performance-and-scalability-considerations) *(deferred to a later PR)*
+14. [Error Handling and Fault Tolerance](#14-error-handling-and-fault-tolerance) *(deferred to a later PR)*
+15. [Assumptions and Limitations](#15-assumptions-and-limitations) *(deferred to a later PR)*
 
 ---
 
@@ -187,8 +187,15 @@ Security descriptors are accessed through .NET Framework 2.0 managed APIs exclus
 
 For objects retrieved via `DirectorySearcher`:
 
-- **Primary approach**: Access `SearchResult.GetDirectoryEntry().ObjectSecurity` to obtain an `ActiveDirectorySecurity` object.
-- **Alternative**: Read `nTSecurityDescriptor` as `byte[]` from `SearchResult.Properties["nTSecurityDescriptor"]` and parse with `new RawSecurityDescriptor(bytes, 0)`.
+- **Primary approach**: Read `nTSecurityDescriptor` as `byte[]` from `SearchResult.Properties["nTSecurityDescriptor"]` and parse with `new RawSecurityDescriptor(bytes, 0)`. This leverages the `PropertiesToLoad` and `SecurityMasks` optimizations already configured on the `DirectorySearcher`, avoiding additional LDAP round-trips. To obtain an `ActiveDirectorySecurity` object (needed for `GetAccessRules()`), construct one from the binary data:
+
+```csharp
+byte[] sdBytes = (byte[])result.Properties["nTSecurityDescriptor"][0];
+ActiveDirectorySecurity security = new ActiveDirectorySecurity();
+security.SetSecurityDescriptorBinaryForm(sdBytes);
+```
+
+- **Fallback**: Access `SearchResult.GetDirectoryEntry().ObjectSecurity` to obtain an `ActiveDirectorySecurity` object directly. **Note:** This forces an additional LDAP bind/read per result, negating `PropertiesToLoad`/`SecurityMasks` optimizations. Use only when the binary SD is unavailable from the search result.
 
 ### ACE Extraction
 
@@ -273,9 +280,7 @@ Each AD class can have a `defaultSecurityDescriptor` attribute in SDDL form, acc
 The ACE comparison function compares two ACEs while ignoring:
 
 - **Read-only access rights**: `ActiveDirectoryRights.ReadProperty | ActiveDirectoryRights.ListChildren | ActiveDirectoryRights.ReadControl | ActiveDirectoryRights.ListObject`
-- **Object inherit flag**: `InheritanceFlags.ObjectInherit`. The `OBJECT_INHERIT_ACE` flag causes an ACE to be inherited by non-container (leaf) child objects, while `ContainerInherit` causes inheritance to container child objects. Since the vast majority of Active Directory entries are containers rather than leaf objects, the `ObjectInherit` flag has no practical effect for most AD objects. The tool masks out this flag before comparing ACEs.
-
-**Caveat:** Leaf objects do exist in AD (e.g., individual DNS records in AD-integrated DNS zones, certain system objects). Ignoring `OBJECT_INHERIT_ACE` is an intentional simplification that may produce incorrect results for these objects. This is documented as a known limitation.
+- **Object inherit flag**: `InheritanceFlags.ObjectInherit`. The `OBJECT_INHERIT_ACE` flag causes an ACE to be inherited by non-container (leaf) child objects, while `ContainerInherit` causes inheritance to container child objects. The tool masks out this flag before comparing ACEs. **This is an intentional design simplification**, not a claim about AD's object model. Leaf objects do exist in AD (e.g., individual DNS records in AD-integrated DNS zones, certain system objects), and ignoring `OBJECT_INHERIT_ACE` may produce incorrect results for ACEs that target these objects. This trade-off is accepted because the flag has no effect on container objects (which represent the tool's primary analysis targets), and preserving it would introduce false positives in schema default ACE comparison. This is documented as a known limitation.
 
 **False-negative risk:** An administrator may intentionally set an explicit ACE that happens to match a schema default. Excluding these ACEs means the tool will not report them. This trade-off is documented as a known limitation. A future enhancement could provide a flag to expose these matches, similar to `--show-builtin`.
 
@@ -826,133 +831,4 @@ The tool assumes the multi-valued `objectClass` attribute is ordered with the mo
 
 ---
 
-## 13. Performance and Scalability Considerations
-
-### Query Optimization
-
-- **Paged searches** with `PageSize = 1000` prevent the server from rejecting large result sets.
-- **Attribute selection**: Only specific attributes are requested via `PropertiesToLoad`, reducing network traffic.
-- **Security masks**: `DirectorySearcher.SecurityMasks` requests only the DACL and owner, reducing security descriptor data transferred.
-
-### Memory Management
-
-- After scanning each naming context, records with no findings are pruned (retaining only records with actual results or parent records needed for CREATE_CHILD analysis).
-- `SearchResultCollection` from `DirectorySearcher.FindAll()` MUST be disposed to release unmanaged LDAP result handles. Use a `using` statement.
-- Results can be processed one at a time via enumeration of `SearchResultCollection`, enabling a streaming approach that avoids loading all results into memory simultaneously.
-
-### SID Resolution Cache Lifecycle
-
-The SID resolution cache persists for the entire duration of the tool's execution. It is populated during the main scan and reused during CSV generation. In large forests with hundreds of thousands of unique SIDs, the cache may consume significant memory. The cache is not bounded or evicted — it grows monotonically. This is an acceptable trade-off for avoiding redundant LDAP lookups.
-
-### Schema Cache
-
-The entire schema (class GUIDs, attribute GUIDs, property sets, validated writes, control access rights) is loaded once at startup and reused for all naming contexts.
-
-### Single-Threaded Processing
-
-The tool processes naming contexts sequentially and does not parallelize queries across partitions. This is a documented constraint. .NET Framework 2.0 lacks `async/await`, making parallelization significantly harder (requiring manual threading). Single-threaded processing is simpler, more predictable, and sufficient for the tool's use case.
-
-### Scalability
-
-- The main scan performs one subtree search per naming context, which in large forests can return millions of objects.
-- Each object's security descriptor is parsed in-memory, and its DACL ACEs are filtered immediately. Only objects with findings are retained.
-- Expected delegation ACEs are indexed by SID and location for efficient lookup during the matching phase.
-
----
-
-## 14. Error Handling and Fault Tolerance
-
-### Exit Codes
-
-The tool uses differentiated exit codes for scripting and automation:
-
-| Exit Code | Meaning |
-|---|---|
-| 0 | Success (findings exported to CSV, or no findings) |
-| 1 | General/unexpected error |
-| 2 | Connection/authentication failure (`DirectoryServicesCOMException` or `ActiveDirectoryObjectNotFoundException`) |
-| 3 | Input file parsing error (templates, delegations — `XmlException` or `InvalidOperationException` from `XmlSerializer`) |
-| 4 | Output file error (cannot write CSV — `IOException`, `UnauthorizedAccessException`) |
-
-### Graceful Degradation Per Naming Context
-
-A search-level error during the main scan of a naming context should NOT abort the entire run. The tool catches `DirectoryServicesCOMException` per naming context:
-
-- **Non-transient errors** (e.g., `LDAP_INSUFFICIENT_RIGHTS`, `LDAP_NO_SUCH_OBJECT`): Log the error to stderr, skip the naming context, continue with remaining NCs.
-- **Summary reporting**: At the end of the scan, report which naming contexts were successfully scanned and which failed, via `Console.Error.WriteLine()`.
-
-### Per-Object Error Handling
-
-- Invalid security descriptors or unreadable attributes produce an error recorded per-object. Scanning continues for subsequent objects.
-- If `objectClass` is present but empty, log an error and skip the object.
-- If `objectClass` is missing, record the error and continue.
-- All per-object processing is wrapped in `try/catch` to prevent a single object failure from aborting the naming context scan.
-
-### Error Counter and Messaging
-
-The error counter tracks all per-location error entries, not just unreadable security descriptors. The summary message accurately reflects this:
-
-```
-[!] {count} objects could not be fully processed, use --show-warning-unreadable to see details
-```
-
-This corrects the previous misleading message that stated "security descriptors could not be read."
-
-### `--show-warning-unreadable` Behavior
-
-When `--show-warning-unreadable` is specified, each per-location processing error generates a CSV record with category `Warning` and the error details. Error types covered include:
-
-- Unreadable security descriptors (failed `nTSecurityDescriptor` reads)
-- Missing or unreadable `objectClass` attributes
-- Unparseable schema `defaultSecurityDescriptor` SDDL strings
-
-Without this flag, errors are silently counted and only the summary count is printed to stderr.
-
-### XML Parsing Errors
-
-Template and delegation XML files that fail to parse or validate against the XSD schema produce error messages to stderr and cause the tool to exit with code 3.
-
-### Progress Reporting
-
-The tool reports progress to stderr throughout execution:
-
-```csharp
-Stopwatch stopwatch = Stopwatch.StartNew();
-// During scan:
-Console.Error.Write(String.Format("\r[{0}] {1} objects processed...", ncDN, count));
-// After each NC:
-Console.Error.WriteLine(String.Format("[*] {0}: {1} objects, {2} findings", ncDN, objectCount, findingCount));
-// Final summary:
-Console.Error.WriteLine(String.Format("[Done] {0} objects, {1} findings, elapsed: {2}", total, findings, stopwatch.Elapsed));
-```
-
-Progress messages use `Console.Error` to keep stdout clean for CSV data. `System.Diagnostics.Stopwatch` provides precise elapsed-time tracking.
-
----
-
-## 15. Assumptions and Limitations
-
-### Assumptions
-
-1. **Single forest scope**: The tool assumes all naming contexts returned by the RootDSE belong to the same forest. Cross-forest trusts are not traversed.
-2. **Standard schema**: Object type GUIDs and class names are expected to match the standard Active Directory schema. Custom schema extensions are supported as long as the schema is loaded dynamically.
-3. **Canonical ACL structure**: The tool assumes ACLs follow the canonical order for correct analysis, but explicitly detects and warns about non-canonical ACLs using `CommonAcl.IsCanonical`.
-4. **AdminSDHolder behavior**: Objects with `adminCount != 0` are assumed to have their DACLs managed by SDProp. Stale `adminCount` is detected by cross-referencing with `AreAccessRulesProtected`.
-5. **Creator Owner semantics**: ACEs with the `Creator Owner` SID in schema defaults are replaced by the object's current owner SID at comparison time, following standard AD behavior.
-6. **objectClass ordering**: The multi-valued `objectClass` attribute is assumed to be ordered with the most-specific class last.
-7. **.NET Framework 2.0 target**: The tool is built for .NET Framework 2.0 for intentional backward compatibility. This means no LINQ, no `HashSet<T>`, no `async/await`, no `string.IsNullOrWhiteSpace()`, and no `Enum.HasFlag()`.
-
-### Limitations
-
-1. **No SACL analysis**: The tool only inspects the DACL. The SACL (used for auditing) is not analyzed.
-2. **No effective permissions calculation**: The tool reports individual ACEs and delegations, not effective cumulative permissions. Deny ACEs, group memberships, and ACE ordering must be manually considered.
-3. **Callback ACE conditions not evaluated**: Callback ACE types are parsed and reported, but their conditional expressions are not evaluated. Reported permissions may not reflect effective conditional access.
-4. **Single-threaded processing**: Naming contexts are processed sequentially. No parallelization across partitions.
-5. **Dynamic schema only**: The schema is loaded from the connected directory at runtime. Incomplete or corrupted schemas may produce raw GUID strings in output.
-6. **OBJECT_INHERIT_ACE simplification**: The `ObjectInherit` flag is masked out during ACE comparison, which may produce incorrect results for AD leaf objects (e.g., DNS records).
-7. **Schema default false negatives**: Explicit ACEs that happen to match schema defaults are suppressed, potentially hiding intentional configurations.
-8. **Most-specific class only**: Default security descriptors are computed from only the most-specific class, not the full structural class hierarchy.
-9. **Stale adminCount**: Objects with stale `adminCount=1` that are no longer SDProp-managed may have ACEs incorrectly filtered. The `AreAccessRulesProtected` cross-check mitigates but does not eliminate this.
-10. **No offline/snapshot mode**: The tool requires a live LDAP connection; it does not support loading from offline dumps.
-11. **Incomplete group membership for owner analysis**: The CREATE_CHILD owner analysis uses `tokenGroups` for group membership, which may not reflect all transitive group memberships across domain boundaries with selective authentication.
-12. **SID resolution cache is unbounded**: In extremely large forests, the cache may consume significant memory.
+*Sections 13 (Performance and Scalability Considerations), 14 (Error Handling and Fault Tolerance), and 15 (Assumptions and Limitations) are deferred to a subsequent PR that will incorporate criticisms from Sections 13–16 of the criticism document.*
