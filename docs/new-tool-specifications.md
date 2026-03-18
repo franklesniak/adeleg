@@ -200,7 +200,7 @@ ActiveDirectorySecurity security = new ActiveDirectorySecurity();
 security.SetSecurityDescriptorBinaryForm(sdBytes);
 ```
 
-- **Fallback**: Access `SearchResult.GetDirectoryEntry().ObjectSecurity` to obtain an `ActiveDirectorySecurity` object directly. **Note:** This forces an additional LDAP bind/read per result, negating `PropertiesToLoad`/`SecurityMasks` optimizations. Use only when the binary SD is unavailable from the search result.
+- **Fallback**: Access `SearchResult.GetDirectoryEntry().ObjectSecurity` to obtain an `ActiveDirectorySecurity` object directly. **Note:** This forces an additional LDAP bind/read per result, negating `PropertiesToLoad`/`SecurityMasks` optimizations. Use only when the binary SD is unavailable from the search result. **Important:** `GetDirectoryEntry()` returns a new `DirectoryEntry` that implements `IDisposable`. When using this fallback, the returned `DirectoryEntry` MUST be disposed (via `using` statement or explicit `.Dispose()`) to release unmanaged ADSI handles, especially inside loops processing many results.
 
 ### ACE Extraction
 
@@ -580,7 +580,7 @@ When `ContainerInherit` is not set, no inheritance scope text is included.
 ### Step 5: Explicit ACE Analysis
 
 - For each naming context, perform a subtree search via `DirectorySearcher` with `Filter = "(objectClass=*)"`, `SearchScope = SearchScope.Subtree`, `PageSize = 1000`, `SecurityMasks = SecurityMasks.Owner | SecurityMasks.Dacl`
-- **Important:** `SearchResultCollection` returned by `FindAll()` implements `IDisposable`. It MUST be disposed (via `using` statement or explicit `.Dispose()`) to release unmanaged LDAP result handles and prevent memory leaks during long scans.
+- **Important:** `SearchResultCollection` returned by `FindAll()` implements `IDisposable`. It MUST be disposed (via `using` statement or explicit `.Dispose()`) to release unmanaged LDAP result handles and prevent memory leaks during long scans. Additionally, `DirectorySearcher` and its `SearchRoot` `DirectoryEntry` both implement `IDisposable` and MUST also be disposed when no longer needed (typically by scoping them in `using` blocks) to avoid leaking ADSI/LDAP handles across multiple naming context iterations.
 - For each object:
   - Parse the security descriptor via `ActiveDirectorySecurity`
   - Compute expected default ACEs from the schema class's `DefaultObjectSecurityDescriptor`
