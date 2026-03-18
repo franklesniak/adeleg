@@ -554,14 +554,14 @@ When `ContainerInherit` is not set, no inheritance scope text is included.
 - Read RootDSE for naming contexts and schema/configuration DNs
 - **Domain enumeration and SID collection**: Use `Forest.GetCurrentForest().Domains` (or `Forest.GetForest(ctx).Domains` with `--server`) to enumerate all domains in the forest. For each `Domain` object, call `domain.GetDirectoryEntry().Properties["objectSid"]` to read its SID, parsed with `new SecurityIdentifier(bytes, 0)`. This collects SIDs for **all** known domain NCs — not just the current domain — which is required for deleted-trustee detection (Section 7) and per-domain SDDL alias expansion (Step 4). The `Domain.Name` property provides the DNS name.
 - **NetBIOS name mapping**: Since `Domain` objects do not expose NetBIOS names directly, query `CN=Partitions,<configurationNC>` via `DirectorySearcher` with filter `(&(objectClass=crossRef)(nCName=*)(nETBIOSName=*))` to retrieve the `nETBIOSName` for each domain NC, and map them to the domains collected above by matching `nCName` to each domain's distinguished name.
-- Report progress: `Console.Error.WriteLine("[*] Connected to {serverName}")` 
+- Report progress: `Console.Error.WriteLine(String.Format("[*] Connected to {0}", serverName))` 
 
 ### Step 2: Schema Loading
 
 - Enumerate all schema classes via `ActiveDirectorySchema.GetCurrentSchema().FindAllClasses()` (or `ActiveDirectorySchema.GetSchema(ctx).FindAllClasses()` with `--server`) for class GUIDs (`SchemaGuid`) and `DefaultObjectSecurityDescriptor` SDDL strings
 - Enumerate all schema attributes via `ActiveDirectorySchema.GetCurrentSchema().FindAllProperties()` (or `.GetSchema(ctx).FindAllProperties()` with `--server`) for attribute GUIDs (`SchemaGuid`)
 - Query `controlAccessRight` objects via `DirectorySearcher` on the Configuration NC for property sets (`validAccesses=48`), validated writes (`validAccesses=8`), and control access rights (`validAccesses=256`)
-- Report progress: `Console.Error.WriteLine("[*] Schema loaded: {classCount} classes, {attrCount} attributes, {rightCount} extended rights")`
+- Report progress: `Console.Error.WriteLine(String.Format("[*] Schema loaded: {0} classes, {1} attributes, {2} extended rights", classCount, attrCount, rightCount))`
 
 ### Step 3: Delegation and Template Loading
 
@@ -719,15 +719,23 @@ Delegation and template definitions use **XML format** (not JSON), taking advant
 
 ### XSD Schema Validation
 
-All delegation and template XML files are validated against an XSD schema at load time:
+All delegation and template XML files are validated against an XSD schema at load time by creating an `XmlReader` with validation settings and reading the document through it:
 
 ```csharp
 XmlReaderSettings settings = new XmlReaderSettings();
 settings.Schemas.Add(null, xsdPath);
 settings.ValidationType = ValidationType.Schema;
+settings.ValidationEventHandler += delegate(object sender, ValidationEventArgs e) {
+    throw new XmlSchemaValidationException(e.Message);
+};
+using (XmlReader reader = XmlReader.Create(xmlPath, settings))
+{
+    XmlDocument doc = new XmlDocument();
+    doc.Load(reader); // Validation occurs during Load
+}
 ```
 
-This provides formal structural validation without third-party libraries.
+If the XML does not conform to the XSD schema, the `ValidationEventHandler` fires and throws an exception, preventing invalid definitions from being processed. This provides formal structural validation without third-party libraries.
 
 ### Access Mask Representation
 
