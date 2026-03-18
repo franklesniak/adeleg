@@ -630,7 +630,7 @@ When `ContainerInherit` is not set, no inheritance scope text is included.
 
 ### Triggering CSV Export
 
-CSV export is triggered by the `--csv <path>` command-line argument. If the path is `-`, output goes to stdout. Otherwise, a file is created (or truncated if it exists). If neither `--csv` nor `--risk-csv` is specified, the tool writes CSV to stdout by default (equivalent to `--csv -`). This ensures the tool always produces usable output, even when run without explicit output arguments.
+CSV export is triggered by the `--csv <path>` command-line argument. If the path is `-`, output goes to stdout. Otherwise, a file is created (or truncated if it exists). If neither `--csv` nor `--risk-csv` (see Section 20.2) is specified, the tool writes CSV to stdout by default (equivalent to `--csv -`). This ensures the tool always produces usable output, even when run without explicit output arguments.
 
 ### CSV Header Row
 
@@ -1149,7 +1149,7 @@ The following SIDs are recognized as unsafe trustees by default. SID-based match
 | 6 | `{domainSID}-515` | Domain Computers (per domain) | Every domain-joined computer is a member; compromise of any workstation grants these permissions |
 | 7 | `{domainSID}-514` | Domain Guests (per domain) | Guest accounts; should never hold delegations |
 
-Domain-relative SIDs (those with a `{domainSID}-` prefix) are expanded for each known domain discovered via `Forest.GetCurrentForest().Domains` (or `Forest.GetForest(ctx).Domains` with `--server`), using the domain SID retrieved within a `using` block: `using (DirectoryEntry entry = domain.GetDirectoryEntry()) { byte[] sidBytes = (byte[])entry.Properties["objectSid"][0]; SecurityIdentifier domainSid = new SecurityIdentifier(sidBytes, 0); }`. The `[0]` index is required because `Properties["objectSid"]` returns a `PropertyValueCollection`, and the `using` block prevents ADSI handle leaks (as specified in Section 9, Step 1).
+Domain-relative SIDs (those with a `{domainSID}-` prefix) are expanded for each known domain discovered via `Forest.GetCurrentForest().Domains` (or `Forest.GetForest(ctx).Domains` with `--server`). For each domain, the domain SID is retrieved within a `using` block: `using (DirectoryEntry entry = domain.GetDirectoryEntry()) { byte[] sidBytes = (byte[])entry.Properties["objectSid"][0]; SecurityIdentifier domainSid = new SecurityIdentifier(sidBytes, 0); /* use domainSid.Value to construct expanded SID strings, e.g., domainSid.Value + "-513" */ }`. The `[0]` index is required because `Properties["objectSid"]` returns a `PropertyValueCollection`, and the `using` block prevents ADSI handle leaks (as specified in Section 9, Step 1).
 
 **Comparison with ADeleginator:** ADeleginator uses name-based regex matching for `"Domain Users"`, `"Authenticated Users"`, and `"Everyone"`. The new tool uses SID-based matching for all baseline trustees, which is correct in localized environments and immune to naming variations. ADeleginator omits Anonymous Logon, Pre-Windows 2000 Compatible Access, Domain Computers, and Domain Guests — all of which are legitimate unsafe trustee concerns.
 
