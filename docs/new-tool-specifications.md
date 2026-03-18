@@ -131,7 +131,7 @@ searcher.ReferralChasing = ReferralChasingOption.None;
 
 The tool uses `AuthenticationTypes.Secure` by default, which provides SASL/Kerberos signing and encryption without requiring LDAPS. For environments that require TLS-based transport:
 
-- LDAPS is supported via path syntax: `"LDAP://server:636"` with `AuthenticationTypes.SecureSocketsLayer`
+- LDAPS is supported via path syntax: `"LDAP://server:636"` with `AuthenticationTypes.Secure | AuthenticationTypes.SecureSocketsLayer` (combining both flags ensures SSPI/Kerberos/NTLM authentication is preserved over the TLS channel; using `SecureSocketsLayer` alone may fall back to simple bind depending on how credentials are supplied)
 - Certificate validation is handled automatically by the Windows trusted CA certificate store
 - No custom certificate validation code or P/Invoke is needed
 
@@ -553,9 +553,9 @@ When `ContainerInherit` is not set, no inheritance scope text is included.
 
 - Establish connection via managed .NET APIs: by default, `Domain.GetCurrentDomain()` and `Forest.GetCurrentForest()` use the Windows DC locator (AD sites and services) for site-aware DC discovery. When `--server` is specified, use `new DirectoryContext(DirectoryContextType.DirectoryServer, serverName)` with `Domain.GetDomain(ctx)` and `Forest.GetForest(ctx)` to route through the specified DC.
 - Read RootDSE for naming contexts and schema/configuration DNs
-- **Domain enumeration and SID collection**: Use `Forest.GetCurrentForest().Domains` (or `Forest.GetForest(ctx).Domains` with `--server`) to enumerate all domains in the forest. For each `Domain` object, call `domain.GetDirectoryEntry().Properties["objectSid"]` to read its SID, parsed with `new SecurityIdentifier(bytes, 0)`. This collects SIDs for **all** known domain NCs — not just the current domain — which is required for deleted-trustee detection (Section 7) and per-domain SDDL alias expansion (Step 4). The `Domain.Name` property provides the DNS name.
+- **Domain enumeration and SID collection**: Use `Forest.GetCurrentForest().Domains` (or `Forest.GetForest(ctx).Domains` with `--server`) to enumerate all domains in the forest. For each `Domain` object, call `domain.GetDirectoryEntry().Properties["objectSid"]` to read its SID — note that `Properties["objectSid"]` returns a `PropertyValueCollection`, so the value must be indexed and cast: `(byte[])domain.GetDirectoryEntry().Properties["objectSid"][0]`, then parsed with `new SecurityIdentifier(bytes, 0)`. This collects SIDs for **all** known domain NCs — not just the current domain — which is required for deleted-trustee detection (Section 7) and per-domain SDDL alias expansion (Step 4). The `Domain.Name` property provides the DNS name.
 - **NetBIOS name mapping**: Since `Domain` objects do not expose NetBIOS names directly, query `CN=Partitions,<configurationNC>` via `DirectorySearcher` with filter `(&(objectClass=crossRef)(nCName=*)(nETBIOSName=*))` to retrieve the `nETBIOSName` for each domain NC, and map them to the domains collected above by matching `nCName` to each domain's distinguished name.
-- Report progress: `Console.Error.WriteLine(String.Format("[*] Connected to {0}", serverName))` 
+- Report progress: `Console.Error.WriteLine(String.Format("[*] Connected to {0}", targetServer))` where `targetServer` is the `--server` value if specified, or the DC name resolved by `Domain.GetCurrentDomain().Name` when using the default DC locator path
 
 ### Step 2: Schema Loading
 
