@@ -18,9 +18,9 @@
 10. [CSV Export Structure](#10-csv-export-structure)
 11. [Delegation and Template System](#11-delegation-and-template-system)
 12. [Handling of Special or Edge Cases](#12-handling-of-special-or-edge-cases)
-13. [Performance and Scalability Considerations](#13-performance-and-scalability-considerations) *(deferred to a later PR)*
-14. [Error Handling and Fault Tolerance](#14-error-handling-and-fault-tolerance) *(deferred to a later PR)*
-15. [Assumptions and Limitations](#15-assumptions-and-limitations) *(deferred to a later PR)*
+13. Performance and Scalability Considerations *(deferred to a later PR)*
+14. Error Handling and Fault Tolerance *(deferred to a later PR)*
+15. Assumptions and Limitations *(deferred to a later PR)*
 
 ---
 
