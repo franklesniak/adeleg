@@ -776,9 +776,39 @@ The delegation XML schema defines:
 - **`<ace>`**: An expected ACE with attributes for `type` (Allow/Deny), `rights` (symbolic `ActiveDirectoryRights` names), `objectType` (GUID), `inheritedObjectType` (GUID)
 - **`<template>`**: A template definition with `name`, `appliesTo` filters, and `rights` arrays
 
+### Document-Level Structure
+
+All XML files — whether containing delegation definitions, risk classification configuration, or both — must use a single root element: **`<adeleg>`**. This root element serves as the container for all top-level elements:
+
+```xml
+<adeleg>
+  <!-- Delegation and template definitions -->
+  <delegation name="..." builtin="true" trustee="...">
+    <location>...</location>
+    <ace type="Allow" rights="..." objectType="..." />
+  </delegation>
+  <template name="..." appliesTo="...">
+    ...
+  </template>
+
+  <!-- Risk classification configuration (optional) -->
+  <unsafeTrustees>
+    <add sid="{domainSID}-513" />
+  </unsafeTrustees>
+  <tier0Resources>
+    <add sid="{domainSID}-500" />
+  </tier0Resources>
+  <dangerousDelegations>
+    <add rights="GenericAll" objectType="" category="A" description="Full control" />
+  </dangerousDelegations>
+</adeleg>
+```
+
+The `<adeleg>` root element may contain any combination of `<delegation>`, `<template>`, `<unsafeTrustees>`, `<tier0Resources>`, and `<dangerousDelegations>` child elements. All are optional — a file may contain only delegation definitions, only risk configuration, or both. The XSD schema (see XSD Schema Validation above) validates this structure: a file missing the `<adeleg>` root element, or containing unrecognized child elements, will fail validation.
+
 ### Risk Classification Configuration Schema
 
-The XML schema also defines elements for configuring risk classification rules (referenced by Sections 16.3.2, 16.4.3, and 17.4). These may appear in the same XML files as delegation definitions or in separate configuration XML files:
+The XML schema defines elements for configuring risk classification rules (referenced by Sections 16.3.2, 16.4.3, and 17.4). These elements appear as children of the `<adeleg>` root element, either in the same XML files as delegation definitions or in separate configuration XML files:
 
 - **`<unsafeTrustees>`**: Container for unsafe trustee definitions. Contains `<add>` and `<remove>` child elements.
   - **`<add sid="...">`**: Adds a SID to the unsafe trustee set. The `sid` attribute may contain a literal SID (e.g., `S-1-5-7`) or a pattern with a placeholder (e.g., `{domainSID}-513`). Patterns are expanded at runtime for each known domain.
@@ -922,7 +952,7 @@ This mode enables troubleshooting deployment issues (connectivity, credential, c
 
 The tool should support a `--log <path>` option that writes all diagnostic messages (those normally emitted to stderr) to the specified file **in addition to** stderr. The log file should include UTC timestamps in ISO 8601 format (`yyyy-MM-ddTHH:mm:ss.fffZ`) prepended to each line, generated via `DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")`.
 
-**Implementation in .NET Framework 2.0:** Use a `StreamWriter` wrapping a `FileStream` opened with `FileMode.Create` and `FileAccess.Write`. All stderr output — both `Console.Error.Write()` and `Console.Error.WriteLine()` calls — should be routed through a single logging helper. The helper maintains a boolean flag tracking whether the current line is "new" (i.e., the previous call ended with a newline). Timestamps are prepended **only at the start of a new line** — not on every write call. For `Write()` calls (partial-line output such as progress updates), the helper writes the text to the log without a timestamp prefix unless it is the first write after a newline. For `WriteLine()` calls, the helper prepends the timestamp if the line is new, writes the text, and marks the next position as a new line. This line-buffered approach prevents timestamps from appearing mid-line while still capturing all partial-line progress output in the log file. The `StreamWriter` must be disposed via a `using` block (or explicit `Close()` in a `finally`) at tool exit to ensure all buffered content is flushed.
+**Implementation in .NET Framework 2.0:** Use a `StreamWriter` wrapping a `FileStream` opened with `FileMode.Create` and `FileAccess.Write`. All stderr output — both `Console.Error.Write()` and `Console.Error.WriteLine()` calls — should be routed through a single logging helper. The helper maintains a boolean flag tracking whether the current position is at the start of a new line. Timestamps are prepended **only at the start of a new line** — not on every write call. Critically, the helper must also scan the text passed to each `Write()` or `WriteLine()` call for **embedded newline characters** (`\n` or `\r\n`), because a single call may contain multiple lines (e.g., exception messages with stack traces). When an embedded newline is found within the text, the helper inserts a timestamp after each newline boundary so that every resulting line in the log is timestamped. For `Write()` calls (partial-line output such as progress updates), the helper writes the text without a timestamp prefix unless the current position is at the start of a new line. For `WriteLine()` calls, the helper prepends the timestamp if the current position is at the start of a new line, writes the text (with embedded newline processing), and marks the next position as a new line. This approach ensures every line in the log file has exactly one timestamp, even when a single API call emits multi-line content. The `StreamWriter` must be disposed via a `using` block (or explicit `Close()` in a `finally`) at tool exit to ensure all buffered content is flushed.
 
 ### 13.3. Summary Statistics
 
@@ -1485,8 +1515,9 @@ The tool supports filtered risk output via the following CLI options:
 
 #### Filtered Report Behavior
 
-- If `--risk-csv` is specified, the filtered report is written **in addition to** the main CSV output. Both outputs are generated from the same scan — no additional AD queries are needed.
-- If `--risk-csv` is specified without `--csv`, the tool still generates the filtered report. The main unfiltered output can be omitted.
+- If both `--csv` and `--risk-csv` are specified, the main unfiltered CSV and the filtered risk CSV are both generated from the same scan — no additional AD queries are needed.
+- If `--risk-csv` is specified without `--csv`, only the filtered risk CSV is generated. The main unfiltered CSV is **not** written to stdout. (The default CSV-to-stdout behavior described in Section 13.8 applies only when **neither** `--csv` **nor** `--risk-csv` is specified.)
+- If `--csv` is specified without `--risk-csv`, only the main unfiltered CSV is generated.
 - The filtered report includes a header row and uses the same RFC 4180 encoding as the main CSV (see Section 10).
 - If no findings meet the risk level threshold, the filtered report contains only the header row (an empty result is still a valid CSV file). This differs from ADeleginator, which does not create the file if no findings exist — always creating the file simplifies downstream tooling.
 - The file is written using `StreamWriter` with `new UTF8Encoding(false)` (UTF-8 without BOM).
