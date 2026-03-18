@@ -637,12 +637,12 @@ CSV export is triggered by the `--csv <path>` command-line argument. If the path
 The CSV output includes a mandatory header row as the first line:
 
 ```
-Resource,Trustee,Trustee type,Category,Details
+Resource,Trustee,Trustee type,Category,Details,Risk Level,Current User Can Exploit
 ```
 
 ### CSV Schema
 
-The CSV output has **5 columns**:
+The CSV output has **7 columns**:
 
 | Column | Name | Description |
 |---|---|---|
@@ -651,6 +651,8 @@ The CSV output has **5 columns**:
 | 3 | **Trustee type** | One of: `User`, `Group`, `Computer`, `External` |
 | 4 | **Category** | Classification of the finding (see below) |
 | 5 | **Details** | Human-readable description of the permission or finding |
+| 6 | **Risk Level** | A risk classification for the row. One of: `Critical`, `High`, `Medium`, `Informational`, or empty (blank) for rows that do not match any risk rule. See Section 18 for the classification matrix. |
+| 7 | **Current User Can Exploit** | `Yes` if the ACE trustee SID matches the current user's SID or any of the current user's transitive group SIDs (see Section 19); empty (blank) otherwise. |
 
 ### Category Values
 
@@ -774,6 +776,33 @@ The delegation XML schema defines:
 - **`<ace>`**: An expected ACE with attributes for `type` (Allow/Deny), `rights` (symbolic `ActiveDirectoryRights` names), `objectType` (GUID), `inheritedObjectType` (GUID)
 - **`<template>`**: A template definition with `name`, `appliesTo` filters, and `rights` arrays
 
+### Risk Classification Configuration Schema
+
+The XML schema also defines elements for configuring risk classification rules (referenced by Sections 16.3.2, 16.4.3, and 17.4). These may appear in the same XML files as delegation definitions or in separate configuration XML files:
+
+- **`<unsafeTrustees>`**: Container for unsafe trustee definitions. Contains `<add>` and `<remove>` child elements.
+  - **`<add sid="...">`**: Adds a SID to the unsafe trustee set. The `sid` attribute may contain a literal SID (e.g., `S-1-5-7`) or a pattern with the `<domainSID>` placeholder (e.g., `<domainSID>-513`). Patterns are expanded at runtime for each known domain.
+  - **`<remove sid="...">`**: Removes a SID from the baseline unsafe trustee set. Uses the same SID/pattern syntax as `<add>`.
+
+- **`<tier0Resources>`**: Container for Tier 0 resource definitions. Contains `<add>` and `<remove>` child elements.
+  - **`<add>`**: Adds a resource to the Tier 0 set. Supports the following attributes (at least one required):
+    - `sid="..."` — Match by SID or SID pattern (e.g., `<domainSID>-500`)
+    - `dn="..."` — Match by DN pattern (e.g., `CN=AdminSDHolder,CN=System,<domainDN>`)
+    - `objectClass="..."` — Match by object class (e.g., `trustedDomain`)
+    - `tier="..."` — Optional sub-tier label (e.g., `Tier0-Critical`, `Tier0-High`; defaults to `Tier0`)
+  - **`<remove>`**: Removes a resource from the baseline Tier 0 set. Uses the same attribute syntax as `<add>`.
+
+- **`<dangerousDelegations>`**: Container for dangerous delegation type definitions. Contains `<add>` and `<remove>` child elements.
+  - **`<add>`**: Adds a dangerous delegation type. Attributes:
+    - `rights="..."` — Symbolic `ActiveDirectoryRights` name (e.g., `WriteProperty`, `ExtendedRight`)
+    - `objectType="..."` — Object type GUID (or empty for `Guid.Empty`)
+    - `category="..."` — Risk category: `A` (Full-Control), `B` (Dangerous Write), `C` (Control Access), `D` (Create/Delete), `E` (Validated Write)
+    - `description="..."` — Human-readable description of the attack vector
+    - `riskLevel="..."` — Optional custom risk level override (`Critical`, `High`, `Medium`, `Informational`)
+  - **`<remove>`**: Removes a delegation type from the baseline dangerous set. Uses `rights` and `objectType` attributes to identify the entry to remove.
+
+At runtime, SID and DN patterns containing `<domainSID>` or `<domainDN>` placeholders are expanded for each known domain, similarly to how delegation location wildcards (`DC=*`) are expanded (see Location Wildcards above). The `<forestRootDN>` placeholder is expanded using the forest root domain's DN.
+
 ### Location Wildcards
 
 Delegation definitions support the following wildcard patterns for locations, which are expanded at load time:
@@ -891,9 +920,9 @@ This mode enables troubleshooting deployment issues (connectivity, credential, c
 
 ### 13.2. File-Based Logging
 
-The tool should support a `--log <path>` option that writes all diagnostic messages (those normally emitted to stderr) to the specified file **in addition to** stderr. The log file should include timestamps in ISO 8601 format (`yyyy-MM-ddTHH:mm:ss.fffZ`) prepended to each line.
+The tool should support a `--log <path>` option that writes all diagnostic messages (those normally emitted to stderr) to the specified file **in addition to** stderr. The log file should include UTC timestamps in ISO 8601 format (`yyyy-MM-ddTHH:mm:ss.fffZ`) prepended to each line, generated via `DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")`.
 
-**Implementation in .NET Framework 2.0:** Use a `StreamWriter` wrapping a `FileStream` opened with `FileMode.Create` and `FileAccess.Write`. Each `Console.Error.WriteLine()` call should be mirrored to the log `StreamWriter`. The `StreamWriter` must be disposed via a `using` block (or explicit `Close()` in a `finally`) at tool exit to ensure all buffered content is flushed.
+**Implementation in .NET Framework 2.0:** Use a `StreamWriter` wrapping a `FileStream` opened with `FileMode.Create` and `FileAccess.Write`. All stderr output — both `Console.Error.Write()` and `Console.Error.WriteLine()` calls — should be routed through a single logging helper method that mirrors each message to the log `StreamWriter` (with a UTC timestamp prefix) in addition to stderr. This ensures that partial-line progress output (e.g., via `Console.Error.Write()`) is also captured in the log. The `StreamWriter` must be disposed via a `using` block (or explicit `Close()` in a `finally`) at tool exit to ensure all buffered content is flushed.
 
 ### 13.3. Summary Statistics
 
@@ -952,7 +981,7 @@ The tool should support a `--verbose` flag (may be specified multiple times for 
 
 ### 13.8. Output Path Defaults
 
-If `--csv` is specified without a path, the tool should default to writing to stdout (enabling piping). If `--csv <path>` is specified, write to the given file path. If neither `--csv` nor `--risk-csv` is specified, write CSV to stdout by default.
+CSV export is triggered by the `--csv` argument (see Section 10). If `--csv <path>` is specified, write to the given file path. If `--csv -` is specified, write to stdout. If neither `--csv` nor `--risk-csv` is specified, the tool writes CSV to stdout by default (equivalent to `--csv -`).
 
 ---
 
@@ -1161,7 +1190,7 @@ The following resources are classified as Tier 0 by default. Resources are ident
 | 13 | `S-1-5-32-550` | Print Operators | Can load drivers on DCs — code execution vector |
 | 14 | `S-1-5-32-551` | Backup Operators | Can back up and restore domain controller data — can extract the AD database |
 
-**Note on ignored trustee list conflict:** Account Operators (`S-1-5-32-548`), Server Operators (`S-1-5-32-549`), Print Operators (`S-1-5-32-550`), and Backup Operators (`S-1-5-32-551`) appear in both the Tier 0 resource list above and the "ignored trustee" list in Section 6. These groups should be **removed from the ignored trustee list** so that their ACEs appear in the output and can be risk-classified. These groups are well-known attack vectors and suppressing their ACEs from the output defeats the purpose of Tier 0 resource identification.
+**Note on ignored trustee list:** Account Operators (`S-1-5-32-548`), Server Operators (`S-1-5-32-549`), Print Operators (`S-1-5-32-550`), and Backup Operators (`S-1-5-32-551`) are **not in the ignored trustee list** (see Section 6, which explicitly notes these groups are reported by default). Their ACEs appear in the output and are risk-classified when they match the Tier 0 resource list. No change to the ignored trustee list is needed.
 
 **Tier 0 Structural Objects (identified by DN pattern and/or object class):**
 
@@ -1383,22 +1412,21 @@ ADeleginator enriches its analysis with the current user's group memberships, en
 At startup (before the main scan), the tool:
 
 1. Retrieves the current user's SID via `System.Security.Principal.WindowsIdentity.GetCurrent().User` (returns a `SecurityIdentifier`).
-2. Resolves the current user's transitive group memberships using the `tokenGroups` constructed attribute:
+2. Resolves the current user's transitive group memberships using the `WindowsIdentity.Groups` property:
    ```csharp
-   using (DirectoryEntry userEntry = new DirectoryEntry("LDAP://<SID=" + currentUserSid.Value + ">"))
-   {
-       userEntry.RefreshCache(new string[] { "tokenGroups" });
-       // Properties["tokenGroups"] returns an array of SID byte arrays
-   }
+   WindowsIdentity currentIdentity = WindowsIdentity.GetCurrent();
+   SecurityIdentifier currentUserSid = currentIdentity.User;
+   IdentityReferenceCollection groupSids = currentIdentity.Groups;
+   // groupSids contains SecurityIdentifier objects for all transitive group memberships
    ```
-   Parse each byte array with `new SecurityIdentifier(bytes, 0)`. This resolves transitive/nested groups that the `memberOf` attribute misses.
-3. Stores the current user's SID and all transitive group SIDs in a **separate** `Dictionary<string, bool>` (the "current user principals set"), keyed by `SecurityIdentifier.Value`. This set is **not** merged into the policy-based unsafe trustee set (Section 16.3).
+   The `Groups` property returns the user's token group SIDs (equivalent to the `tokenGroups` constructed attribute), which include all transitive/nested group memberships. This is a .NET Framework 2.0 managed API that does not require any LDAP query or `DirectoryEntry` usage, avoiding the need for `--server` prefix handling.
+3. Stores the current user's SID and all group SIDs in a **separate** `Dictionary<string, bool>` (the "current user principals set"), keyed by `SecurityIdentifier.Value`. This set is **not** merged into the policy-based unsafe trustee set (Section 16.3).
 4. Reports the current user context to stderr:
    ```
    [i] Running as: DOMAIN\username (S-1-5-21-...), member of {n} groups ({m} non-Tier-0)
    ```
 
-**Rationale for separate sets:** ADeleginator merges the current user's group memberships into the unsafe trustee list, which means risk classification depends on who runs the tool — different operators produce different risk reports for the same environment. This hurts repeatability. The new tool keeps the unsafe trustee set policy-based (baseline SIDs from Section 16.3.1 plus any XML-configured additions), ensuring the `Risk Level` column is identical regardless of operator. The operator-specific context is captured in the separate `Current User Can Exploit` column.
+**Rationale for `WindowsIdentity.Groups` over `tokenGroups` via LDAP:** ADeleginator uses the `memberOf` attribute via an LDAP query, which only returns direct group memberships and misses nested/transitive groups. The criticism document prescribes `tokenGroups` via `DirectoryEntry.RefreshCache()`, but `WindowsIdentity.Groups` provides the same transitive group resolution without requiring an LDAP query. This avoids `--server` targeting concerns (since it reads from the local access token, not from a directory server) and is the idiomatic .NET Framework 2.0 approach. The `Groups` property returns `IdentityReferenceCollection` containing `SecurityIdentifier` objects, which can be iterated directly.
 
 **Fixes for ADeleginator bugs:**
 
@@ -1406,7 +1434,7 @@ At startup (before the main scan), the tool:
 |---|---|
 | **All-or-nothing group append:** If user has any non-Tier-0 group, all groups (including Tier 0) are appended to unsafe list | **Eliminated:** Current user groups are stored in a separate set and never merged into the policy-based unsafe trustee set |
 | **Space-join bug:** Group array is space-joined instead of pipe-joined, creating a never-matching regex | **Eliminated:** Groups are stored individually in a `Dictionary<string, bool>` keyed by SID; no string concatenation involved |
-| **`memberOf` misses transitive groups:** `memberOf` only returns direct group memberships | **Fixed:** Uses `tokenGroups` constructed attribute via `DirectoryEntry.RefreshCache()` to resolve all transitive group memberships |
+| **`memberOf` misses transitive groups:** `memberOf` only returns direct group memberships | **Fixed:** Uses `WindowsIdentity.GetCurrent().Groups` to resolve all transitive group memberships from the local access token — no LDAP query needed |
 
 ### 19.2. Per-Finding Exploitability Annotation
 
@@ -1487,7 +1515,7 @@ The following table summarizes the specific ADeleginator defects and limitations
 | ADeleginator Defect/Limitation | Correction in New Tool |
 |---|---|
 | **Name-based regex matching** — fragile, locale-dependent, susceptible to false positives from substring matching | **SID-based and access-mask-based matching** — language-independent, structurally precise, no regex needed |
-| **Space-join bug** — current user's groups are space-joined into a single never-matching regex alternative | **Eliminated** — groups are resolved via `tokenGroups` and stored individually in a `Dictionary<string, bool>` keyed by SID |
+| **Space-join bug** — current user's groups are space-joined into a single never-matching regex alternative | **Eliminated** — groups are resolved via `WindowsIdentity.Groups` and stored individually in a `Dictionary<string, bool>` keyed by SID |
 | **All-or-nothing group append** — if any non-Tier-0 group exists, all groups (including Tier 0) are added as unsafe | **Separated concerns** — current user groups stored in a separate set used only for `Current User Can Exploit` annotation; risk classification is deterministic |
 | **Unescaped regex metacharacters** — `"Users (container)"` fails to match due to unescaped parentheses | **Eliminated** — no regex is used; matching is by SID, DN pattern, or object class |
 | **Only 3 baseline unsafe trustees** — misses Anonymous Logon, Pre-Windows 2000 Compatible Access, Domain Computers, Domain Guests | **7 baseline unsafe trustee SIDs** — covers the full set of broadly-scoped well-known principals |
@@ -1496,7 +1524,7 @@ The following table summarizes the specific ADeleginator defects and limitations
 | **Binary risk classification** — insecure or not, no gradation | **Four-level graduated risk severity** — Critical, High, Medium, Informational, based on a three-dimensional matrix |
 | **External wrapper dependency** — requires ADeleg binary as a separate download | **Integrated** — risk classification performed during the scan using typed data; no external tool needed |
 | **No GPO link resolution** — `"GPO linked to Tier Zero container"` is a name pattern without actual GPO link resolution | **Dynamic GPO link resolution** — reads `gpLink` attributes from Tier 0 containers and adds linked GPO DNs to Tier 0 set |
-| **`memberOf` attribute for group enumeration** — misses nested/transitive group memberships | **`tokenGroups` constructed attribute** — resolves all transitive group memberships via `DirectoryEntry.RefreshCache()` |
+| **`memberOf` attribute for group enumeration** — misses nested/transitive group memberships | **`WindowsIdentity.GetCurrent().Groups`** — resolves all transitive group memberships from the local access token without requiring an LDAP query |
 | **No compound detection** — does not detect DCSync (requires two specific rights granted together) | **DCSync compound detection** — tracks both replication rights per trustee per domain root and flags compound condition as Critical |
 | **Hardcoded, non-configurable lists** — no user customization without source modification | **XML-configurable lists** — unsafe trustees, Tier 0 resources, and dangerous delegation types are all configurable |
 | **No per-finding exploitability annotation** — does not indicate which findings the current user can personally exploit | **`Current User Can Exploit` column** — per-row annotation indicating whether the ACE trustee matches the current user's SID or group SIDs |
@@ -1522,7 +1550,7 @@ The following table summarizes the specific ADeleginator defects and limitations
 
 ### 20.6. Performance Impact
 
-The risk classification logic adds only dictionary lookups and bitwise flag checks per ACE — all O(1) operations. The primary additional cost is the startup-phase `tokenGroups` resolution (one LDAP query) and `gpLink` resolution (one read per Tier 0 container). These are negligible compared to the main subtree scan.
+The risk classification logic adds only dictionary lookups and bitwise flag checks per ACE — all O(1) operations. The primary additional cost is the startup-phase group resolution via `WindowsIdentity.GetCurrent().Groups` (reads from the local access token — no LDAP query) and `gpLink` resolution (one read per Tier 0 container). These are negligible compared to the main subtree scan.
 
 The `--risk-csv` filtered output requires a second pass through the results only if streaming output is used. If results are accumulated in memory, both the main CSV and the filtered CSV can be written in a single pass.
 
@@ -1532,6 +1560,6 @@ The risk classification is applied **after** the existing filtering logic. ACEs 
 
 This means:
 
-- ACEs for trustees in the "ignored trustee" list (SELF, Local System, BUILTIN\Administrators, Domain Admins, etc.) are already excluded from the output and not risk-classified. **However**, as noted in Section 16.4.1, Account Operators, Server Operators, Print Operators, and Backup Operators should be **removed from the ignored trustee list** so that their ACEs appear in the output and can be risk-classified.
+- ACEs for trustees in the "ignored trustee" list (SELF, Local System, BUILTIN\Administrators, Domain Admins, etc.) are already excluded from the output and not risk-classified. Note that Account Operators, Server Operators, Print Operators, and Backup Operators are **not** in the ignored trustee list (see Section 6) — their ACEs are reported by default and are subject to risk classification.
 - Built-in delegation ACEs that are hidden by default (visible only with `--show-builtin`) are risk-classified only if `--show-builtin` is enabled.
 - The `Risk Level` column is empty for rows with Category values of `Owner` where the owner is not an unsafe trustee, all `Warning` rows, and all `Deny ACE` rows.
