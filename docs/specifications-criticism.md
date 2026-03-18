@@ -851,7 +851,7 @@ The revised tool should resolve current user group memberships using a more robu
 
 #### 16.3.3. Configurable Unsafe Trustee Definitions
 
-The baseline unsafe trustee list and the Tier 0 exemption list (Section 16.4) should be configurable via the XML delegation/template format (see Section 8.1). The XML schema should support:
+The baseline unsafe trustee list and the Tier 0 resource identification rules (Section 16.4) should be configurable via the XML delegation/template format (see Section 8.1). The XML schema should support:
 
 - Adding custom unsafe trustee SIDs (e.g., organization-specific broad groups)
 - Removing baseline unsafe trustee SIDs (e.g., if an organization has locked down `Pre-Windows 2000 Compatible Access`)
@@ -942,7 +942,11 @@ The following delegation types should be classified as dangerous by default, org
 | 4 | `GenericAll` (value `0xF01FF`) present in access mask | *(not detected by ADeleginator)* | Full control — grants every possible permission on the object |
 | 5 | `GenericWrite` (value `0x20028`) present in access mask | *(not detected by ADeleginator)* | `ReadControl` + `WriteProperty` + `Self` (write all properties + all validated writes) — very broad write access |
 
-**Note on GenericAll and GenericWrite:** `ActiveDirectoryRights` defines `GenericAll` (value `983551` / `0xF01FF`) which combines all standard and specific rights into full control. `GenericWrite` (value `131112` / `0x20028`) decomposes into `ReadControl` (`0x20000`) | `WriteProperty` (`0x20`) | `Self` (`0x8`). Note that `ReadControl` is a read-only right (included in the ignored set per Section 6.5), so the dangerous components of `GenericWrite` are `WriteProperty` and `Self` — granting write access to all properties and all validated writes. ADeleginator does not detect these because it pattern-matches specific human-readable strings, missing the generic right composites. The revised tool should detect these by checking the raw access mask bits: `((int)rule.ActiveDirectoryRights & 0xF01FF) == 0xF01FF` for GenericAll, and `((int)rule.ActiveDirectoryRights & 0x20028) == 0x20028` for GenericWrite.
+**Note on GenericAll and GenericWrite:** The `System.DirectoryServices.ActiveDirectoryRights` enum (verified from the .NET Framework source) defines `GenericAll` (value `983551` / `0xF01FF`) which combines all standard and specific rights into full control, and `GenericWrite` (value `131112` / `0x20028`) which decomposes into `ReadControl` (`0x20000`) | `WriteProperty` (`0x20`) | `Self` (`0x8`). Note that `ReadControl` is a read-only right (included in the ignored set per Section 6.5), so the dangerous components of `GenericWrite` are `WriteProperty` and `Self` — granting write access to all properties and all validated writes.
+
+**Important distinction from standard Windows GENERIC_* bits:** The values `0xF01FF` and `0x20028` in the `ActiveDirectoryRights` enum are **not** the standard Windows generic access mask bits (`GENERIC_ALL = 0x10000000`, `GENERIC_WRITE = 0x40000000`). Active Directory maps generic access bits to object-type-specific rights when storing ACEs. The `ActiveDirectoryRights` enum values reflect the **mapped (resolved) specific rights**, not the raw generic bits. When you read an ACE from AD via `ActiveDirectoryAccessRule.ActiveDirectoryRights`, the property returns the access mask as stored in the ACE — which will contain the mapped values (`0xF01FF` for full control, `0x20028` for generic write), not the pre-mapping generic bits. Consequently, checking `((int)rule.ActiveDirectoryRights & 0xF01FF) == 0xF01FF` for GenericAll and `((int)rule.ActiveDirectoryRights & 0x20028) == 0x20028` for GenericWrite is correct.
+
+ADeleginator does not detect these because it pattern-matches specific human-readable strings, missing the generic right composites.
 
 **Category B — Dangerous Write Delegations (dangerous when the object type GUID targets a sensitive attribute or is empty):**
 
@@ -1049,7 +1053,6 @@ The following matrix defines the risk level for each combination:
 | Yes | Yes | D (Create/Delete) | **High** |
 | Yes | Yes | E (Dangerous Validated Write) | **High** |
 | Yes | No | A (Full-Control) | **High** |
-| Yes | No | C (DCSync compound on domain root — always Tier 0) | **Critical** |
 | Yes | No | B or C (non-DCSync) | **Medium** |
 | Yes | No | D or E | **Medium** |
 | No | Yes | A, B, or C | **Informational** |
@@ -1057,7 +1060,7 @@ The following matrix defines the risk level for each combination:
 | No | No | Any | *(no risk tag)* |
 
 **Notes:**
-- DCSync compound detection on a domain root object is always `Critical` regardless of the Tier 0 classification of the root object, because domain root objects are inherently Tier 0 (see Section 16.4.1, item #15).
+- Domain root objects are inherently Tier 0 (see Section 16.4.1, item #15). Therefore, DCSync compound detection (which by definition targets domain root objects) will always fall under the `Unsafe Trustee = Yes, Tier 0 Resource = Yes, Category C (DCSync compound)` → `Critical` row. No separate matrix row is needed for this case.
 - Owner findings (Category column = `Owner`) follow the same matrix: if the owner SID is an unsafe trustee and the object is Tier 0, the risk level is `Critical` (for Tier 0) or `High` (for non-Tier-0).
 - Deny ACEs are **not** assigned a risk level, since deny ACEs restrict rather than grant access. This corrects ADeleginator's approach, which only checks for `"Allow"` in the Category field but does not explicitly exclude deny ACEs from risk classification — the revised tool should be explicit about this exclusion.
 - Warning-category rows (unreadable SDs, DACL protection, non-canonical ACLs, deleted trustees) should not receive a risk level, as they represent structural issues rather than delegation risks.
