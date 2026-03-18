@@ -42,8 +42,13 @@ The tool queries the following Active Directory partitions, discovered dynamical
 On startup, the tool reads the RootDSE to retrieve essential directory metadata:
 
 ```csharp
-DirectoryEntry rootDSE = new DirectoryEntry("LDAP://RootDSE");
+using (DirectoryEntry rootDSE = new DirectoryEntry("LDAP://RootDSE"))
+{
+    // Read attributes and use rootDSE within this scope
+}
 ```
+
+`DirectoryEntry` implements `IDisposable` and must be disposed after use (e.g., via `using`) to avoid leaking unmanaged ADSI handles. This applies to all `DirectoryEntry` instances throughout the tool.
 
 The following attributes are read from the RootDSE:
 
@@ -81,7 +86,7 @@ The tool uses .NET Framework 2.0 managed APIs for DC discovery:
 | Auto-discover a DC for the current domain | `Domain.GetCurrentDomain()` returns a `Domain` object with an auto-selected DC |
 | Auto-discover forest-level topology | `Forest.GetCurrentForest()` returns the forest with all domains and sites |
 | Connect to a specific server | `new DirectoryEntry("LDAP://serverName")` — connection is established lazily on first property access |
-| Specify a port number | Encoded in the LDAP path: `"LDAP://serverName:636"` for LDAPS |
+| Specify a port number | Encoded in the LDAP path: `"LDAP://serverName:636"` for LDAPS. **Note:** the port number alone does not enable TLS — `AuthenticationTypes.SecureSocketsLayer` must also be set (see LDAPS section below) |
 | Failure on non-domain-joined machine | `Domain.GetCurrentDomain()` throws `ActiveDirectoryObjectNotFoundException`; the tool must catch this and report a clear error message |
 
 The tool should default to using `Domain.GetCurrentDomain()` for DC discovery (which uses the Windows DC locator, i.e., AD sites and services native functionality, to select an optimal DC). An optional `--server` CLI argument allows targeting a specific DC. When `--server` is specified, all directory operations must be routed through that server for consistency:
@@ -633,7 +638,7 @@ The CSV output has **5 columns**:
 
 | Column | Name | Description |
 |---|---|---|
-| 1 | **Resource** | The location where the delegation or finding applies. Either a DN (e.g., `OU=Users,DC=example,DC=com`) or a schema reference (e.g., `Schema: default security descriptor of class 'user'`) |
+| 1 | **Resource** | The location where the delegation or finding applies. Either a DN (e.g., `OU=Users,DC=example,DC=com`), a schema reference (e.g., `Schema: default security descriptor of class 'user'`), or `Global` for non-location-specific findings |
 | 2 | **Trustee** | The resolved name of the security principal (DN or `DOMAIN\Username`), or the raw SID string if unresolvable, or `Global` for location-level warnings |
 | 3 | **Trustee type** | One of: `User`, `Group`, `Computer`, `External` |
 | 4 | **Category** | Classification of the finding (see below) |
