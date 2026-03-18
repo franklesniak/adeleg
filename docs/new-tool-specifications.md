@@ -360,7 +360,7 @@ Deny ACEs for `Everyone` that deny the `Change Password` control access right ar
 
 ### AdminSDHolder ACEs
 
-For objects with a nonzero `adminCount` attribute, ACEs that appear in the AdminSDHolder DACL are suppressed. This is because the SDProp process copies the AdminSDHolder's DACL onto protected objects.
+For objects where `adminCount != 0` **and** `AreAccessRulesProtected` is `true`, ACEs that appear in the AdminSDHolder DACL are suppressed. This is because the SDProp process copies the AdminSDHolder's DACL onto protected objects and blocks inheritance. Both conditions are required: `adminCount` alone is unreliable because it is notoriously stale — it is set when an object is added to a protected group but not always cleared when removed. If `adminCount != 0` but `AreAccessRulesProtected` is `false`, the object is likely no longer SDProp-managed, and its explicit ACEs represent real delegations that should be reported (not filtered).
 
 The `adminCount` attribute is parsed as an integer, not a string:
 
@@ -372,7 +372,7 @@ int adminCount = result.Properties.Contains("adminCount")
 
 Any nonzero integer value indicates a protected object.
 
-**Stale adminCount caveat:** The `adminCount` attribute is notoriously stale in AD — it is set when an object is added to a protected group but not always cleared when removed. Formerly-protected objects may have `adminCount=1` but are no longer managed by SDProp, causing their ACEs to be incorrectly filtered. As a supplemental check, the tool also examines `ActiveDirectorySecurity.AreAccessRulesProtected` — objects that are truly SDProp-managed will have DACL inheritance blocked. If `adminCount != 0` but `AreAccessRulesProtected` is `false`, the tool should log a warning to stderr noting the inconsistency, as this may indicate a stale `adminCount`.
+**Stale adminCount caveat:** The `adminCount` attribute is notoriously stale in AD — it is set when an object is added to a protected group but not always cleared when removed. Formerly-protected objects may have `adminCount=1` but are no longer managed by SDProp. Because AdminSDHolder ACE filtering requires both `adminCount != 0` and `AreAccessRulesProtected == true` (see above), stale `adminCount` objects whose inheritance has been restored will correctly have their ACEs reported rather than suppressed. If `adminCount != 0` but `AreAccessRulesProtected` is `false`, the tool logs a warning to stderr noting the inconsistency, as this may indicate a stale `adminCount`.
 
 ### Ignored Control Access Rights
 
@@ -544,7 +544,7 @@ When `ContainerInherit` is not set, no inheritance scope text is included.
 
 - Establish connection via `DirectoryEntry` (automatically discovers a DC via `Domain.GetCurrentDomain()`, or connects to a specific server via `--server`)
 - Read RootDSE for naming contexts and schema/configuration DNs
-- Enumerate domains from `CN=Partitions,<configurationNC>` via `DirectorySearcher` to get domain NetBIOS names. Domain SIDs are retrieved via `Domain.GetDirectoryEntry().Properties["objectSid"]` parsed with `new SecurityIdentifier(bytes, 0)`.
+- Enumerate domains from `CN=Partitions,<configurationNC>` via `DirectorySearcher` to get domain NetBIOS names. For each domain NC discovered (each `crossRef` with `nCName` + `nETBIOSName`), bind to the NC root (the `nCName` value) via `new DirectoryEntry("LDAP://" + nCName)` and read its `objectSid` property, parsed with `new SecurityIdentifier(bytes, 0)`. This collects SIDs for **all** known domain NCs in the forest — not just the current domain — which is required for deleted-trustee detection (Section 7) and per-domain SDDL alias expansion (Step 4).
 - Report progress: `Console.Error.WriteLine("[*] Connected to {serverName}")` 
 
 ### Step 2: Schema Loading
@@ -563,7 +563,7 @@ When `ContainerInherit` is not set, no inheritance scope text is included.
 ### Step 4: Schema ACE Analysis
 
 - For each `ActiveDirectorySchemaClass` with a `DefaultObjectSecurityDescriptor`:
-  - Parse the SDDL string via `new RawSecurityDescriptor(sddlString)` for each domain
+  - Parse the SDDL string **once per known domain NC** (all domain NCs collected in Step 1). SDDL domain-relative aliases (e.g., `DA` for Domain Admins, `EA` for Enterprise Admins, `PA` for Group Policy Creator Owners) resolve to different SIDs in each domain. Since `RawSecurityDescriptor(string)` resolves aliases using only the calling process's security context (i.e., the current domain), the tool must manually substitute domain-relative SDDL abbreviations with each domain's specific SIDs before parsing. Specifically, for each domain, replace aliases like `DA` → `S-1-5-21-<domainSid>-512`, `DU` → `S-1-5-21-<domainSid>-513`, etc., using the domain SID collected in Step 1, then parse the substituted string via `new RawSecurityDescriptor(expandedSddl)`.
   - Filter the DACL ACEs through the interest check logic
   - Store remaining ACEs as orphan ACEs in the result set
 
