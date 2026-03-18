@@ -65,8 +65,8 @@ A naming context is classified as a "known domain NC" if it appears as the `nCNa
 - **Schema partition**: Enumerated via `ActiveDirectorySchema.GetCurrentSchema().FindAllClasses()` and `FindAllProperties()` for class GUIDs, attribute GUIDs, and default security descriptors.
 - **Configuration partition**: Queried with `DirectorySearcher` using `SearchScope.Subtree` to enumerate `controlAccessRight` objects for property sets, validated writes, and control access rights.
 - **Each naming context** (including schema, configuration, domain, and application partitions): Queried with `DirectorySearcher` using `Filter = "(objectClass=*)"` and `SearchScope = SearchScope.Subtree`, which returns every object in the partition recursively.
-- **AdminSDHolder**: Accessed via `new DirectoryEntry("LDAP://CN=AdminSDHolder,CN=System,<domainDN>")` when the naming context is a known domain NC; otherwise `new DirectoryEntry("LDAP://CN=AdminSDHolder,CN=System,<rootDomainNamingContext>")`.
-- **Individual SID lookups**: Performed via `new DirectoryEntry("LDAP://<SID=S-1-5-...>")`.
+- **AdminSDHolder**: Accessed via `new DirectoryEntry("LDAP://CN=AdminSDHolder,CN=System,<domainDN>")` when the naming context is a known domain NC; otherwise `new DirectoryEntry("LDAP://CN=AdminSDHolder,CN=System,<rootDomainNamingContext>")`. When `--server` is specified, the server prefix is included: `"LDAP://serverName/CN=AdminSDHolder,..."`.
+- **Individual SID lookups**: Performed via `new DirectoryEntry("LDAP://<SID=S-1-5-...>")`. When `--server` is specified, the server prefix is included: `"LDAP://serverName/<SID=...>"`.
 
 ---
 
@@ -84,7 +84,13 @@ The tool uses .NET Framework 2.0 managed APIs for DC discovery:
 | Specify a port number | Encoded in the LDAP path: `"LDAP://serverName:636"` for LDAPS |
 | Failure on non-domain-joined machine | `Domain.GetCurrentDomain()` throws `ActiveDirectoryObjectNotFoundException`; the tool must catch this and report a clear error message |
 
-The tool should default to using `Domain.GetCurrentDomain()` for DC discovery. An optional `--server` CLI argument allows targeting a specific DC via `new DirectoryEntry("LDAP://specificServer/...")`.
+The tool should default to using `Domain.GetCurrentDomain()` for DC discovery (which uses the Windows DC locator, i.e., AD sites and services native functionality, to select an optimal DC). An optional `--server` CLI argument allows targeting a specific DC. When `--server` is specified, all directory operations must be routed through that server for consistency:
+
+- **Managed API context**: Use `new DirectoryContext(DirectoryContextType.DirectoryServer, serverName)` to construct `Domain.GetDomain(ctx)`, `Forest.GetForest(ctx)`, and `ActiveDirectorySchema.GetSchema(ctx)` objects, ensuring DC locator routes through the specified server.
+- **DirectoryEntry paths**: All `DirectoryEntry` LDAP paths must include the server prefix, e.g., `"LDAP://serverName/RootDSE"`, `"LDAP://serverName/CN=AdminSDHolder,..."`, `"LDAP://serverName/<SID=...>"`.
+- **DirectorySearcher instances**: The `SearchRoot` `DirectoryEntry` must include the server prefix when `--server` is specified.
+
+**General principle**: Prefer .NET Framework 2.0 managed classes (`Domain`, `Forest`, `ActiveDirectorySchema`, `DirectoryContext`) over raw LDAP paths wherever possible. These managed classes use the Windows DC locator for site-aware DC selection automatically, and respect `DirectoryContext` for explicit server targeting. Raw LDAP paths (via `DirectoryEntry`) should only be used when no managed equivalent exists (e.g., AdminSDHolder access, SID-based lookups, reading specific object attributes not exposed by managed classes).
 
 ### Authentication
 
@@ -132,7 +138,7 @@ The tool uses `AuthenticationTypes.Secure` by default, which provides SASL/Kerbe
 
 ### Connection Endpoints
 
-DC discovery is handled by `Domain.GetCurrentDomain()` and `Forest.GetCurrentForest()`. The `--server` CLI option allows explicit server targeting. Global Catalog access uses the `GC://` provider (`"GC://server"`), though the tool's operations primarily use the standard LDAP provider.
+DC discovery is handled by `Domain.GetCurrentDomain()` and `Forest.GetCurrentForest()`, which use the Windows DC locator (AD sites and services) for site-aware DC selection. The `--server` CLI option allows explicit server targeting via `DirectoryContext(DirectoryContextType.DirectoryServer, serverName)`. Global Catalog access uses the `GC://` provider (`"GC://server"`), though the tool's operations primarily use the standard LDAP provider.
 
 ---
 
@@ -234,6 +240,8 @@ RawSecurityDescriptor sd = new RawSecurityDescriptor(sddlString);
 ```
 
 The `RawSecurityDescriptor(string)` constructor accepts SDDL directly. The resulting `.DiscretionaryAcl` provides ACE enumeration through `CommonAce` and `ObjectAce` types in `System.Security.AccessControl`.
+
+**Important**: SDDL domain-relative aliases (e.g., `DA` for Domain Admins, `EA` for Enterprise Admins) resolve to different SIDs in each domain. Since `RawSecurityDescriptor(string)` resolves aliases using only the calling process's security context (i.e., the current domain), schema default SDDL strings must be parsed **once per known domain NC** with manual alias substitution. See Step 4 in Section 9 for the full per-domain expansion mechanism.
 
 ### Owner Retrieval
 
@@ -412,7 +420,7 @@ SID resolution uses a clear 4-step priority:
 
 1. **Cache lookup**: Check a SID resolution cache (a key-value mapping from SID string to resolved result) for a previously resolved display name and principal type.
 2. **Local resolution via `SecurityIdentifier.Translate()`**: Call `SecurityIdentifier.Translate(typeof(NTAccount))`. If successful, the `NTAccount.Value` property returns the name in `DOMAIN\Username` format. This replaces the previous `LookupAccountSidLocalW` approach entirely — no P/Invoke or dynamic library loading is needed.
-3. **LDAP SID-based lookup**: Perform a lookup via `new DirectoryEntry("LDAP://<SID=" + sid.Value + ">")` and retrieve `distinguishedName` and `objectClass` attributes. If successful, the DN is used as the display name and `objectClass` determines the principal type.
+3. **LDAP SID-based lookup**: Perform a lookup via `new DirectoryEntry("LDAP://<SID=" + sid.Value + ">")` and retrieve `distinguishedName` and `objectClass` attributes. When `--server` is specified, include the server prefix: `"LDAP://serverName/<SID=" + sid.Value + ">"`. If successful, the DN is used as the display name and `objectClass` determines the principal type.
 4. **Raw SID string fallback**: If all resolution methods fail, the raw SID string (e.g., `S-1-5-21-...`) is used as the display name, with type `External`.
 
 ### Cache Semantics
@@ -542,15 +550,16 @@ When `ContainerInherit` is not set, no inheritance scope text is included.
 
 ### Step 1: Connection and Bootstrap
 
-- Establish connection via `DirectoryEntry` (automatically discovers a DC via `Domain.GetCurrentDomain()`, or connects to a specific server via `--server`)
+- Establish connection via managed .NET APIs: by default, `Domain.GetCurrentDomain()` and `Forest.GetCurrentForest()` use the Windows DC locator (AD sites and services) for site-aware DC discovery. When `--server` is specified, use `new DirectoryContext(DirectoryContextType.DirectoryServer, serverName)` with `Domain.GetDomain(ctx)` and `Forest.GetForest(ctx)` to route through the specified DC.
 - Read RootDSE for naming contexts and schema/configuration DNs
-- Enumerate domains from `CN=Partitions,<configurationNC>` via `DirectorySearcher` to get domain NetBIOS names. For each domain NC discovered (each `crossRef` with `nCName` + `nETBIOSName`), bind to the NC root (the `nCName` value) via `new DirectoryEntry("LDAP://" + nCName)` and read its `objectSid` property, parsed with `new SecurityIdentifier(bytes, 0)`. This collects SIDs for **all** known domain NCs in the forest — not just the current domain — which is required for deleted-trustee detection (Section 7) and per-domain SDDL alias expansion (Step 4).
+- **Domain enumeration and SID collection**: Use `Forest.GetCurrentForest().Domains` (or `Forest.GetForest(ctx).Domains` with `--server`) to enumerate all domains in the forest. For each `Domain` object, call `domain.GetDirectoryEntry().Properties["objectSid"]` to read its SID, parsed with `new SecurityIdentifier(bytes, 0)`. This collects SIDs for **all** known domain NCs — not just the current domain — which is required for deleted-trustee detection (Section 7) and per-domain SDDL alias expansion (Step 4). The `Domain.Name` property provides the DNS name.
+- **NetBIOS name mapping**: Since `Domain` objects do not expose NetBIOS names directly, query `CN=Partitions,<configurationNC>` via `DirectorySearcher` with filter `(&(objectClass=crossRef)(nCName=*)(nETBIOSName=*))` to retrieve the `nETBIOSName` for each domain NC, and map them to the domains collected above by matching `nCName` to each domain's distinguished name.
 - Report progress: `Console.Error.WriteLine("[*] Connected to {serverName}")` 
 
 ### Step 2: Schema Loading
 
-- Enumerate all schema classes via `ActiveDirectorySchema.GetCurrentSchema().FindAllClasses()` for class GUIDs (`SchemaGuid`) and `DefaultObjectSecurityDescriptor` SDDL strings
-- Enumerate all schema attributes via `ActiveDirectorySchema.GetCurrentSchema().FindAllProperties()` for attribute GUIDs (`SchemaGuid`)
+- Enumerate all schema classes via `ActiveDirectorySchema.GetCurrentSchema().FindAllClasses()` (or `ActiveDirectorySchema.GetSchema(ctx).FindAllClasses()` with `--server`) for class GUIDs (`SchemaGuid`) and `DefaultObjectSecurityDescriptor` SDDL strings
+- Enumerate all schema attributes via `ActiveDirectorySchema.GetCurrentSchema().FindAllProperties()` (or `.GetSchema(ctx).FindAllProperties()` with `--server`) for attribute GUIDs (`SchemaGuid`)
 - Query `controlAccessRight` objects via `DirectorySearcher` on the Configuration NC for property sets (`validAccesses=48`), validated writes (`validAccesses=8`), and control access rights (`validAccesses=256`)
 - Report progress: `Console.Error.WriteLine("[*] Schema loaded: {classCount} classes, {attrCount} attributes, {rightCount} extended rights")`
 
