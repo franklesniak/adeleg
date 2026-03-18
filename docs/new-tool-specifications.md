@@ -103,7 +103,7 @@ The tool should default to using `Domain.GetCurrentDomain()` for DC discovery. A
 | Control access rights | `(&(objectClass=controlAccessRight)(validAccesses=256)(rightsGuid=*))` | `rightsGuid`, `displayName` |
 | All naming contexts (main scan) | `(objectClass=*)` | `nTSecurityDescriptor`, `objectClass`, `objectSID`, `adminCount`, `msDS-KrbTgtLinkBl`, `serverReference` |
 | AdminSDHolder | `(objectClass=*)` | `nTSecurityDescriptor` |
-| Domain enumeration (partitions) | `(&(nCName=*)(nETBIOSName=*))` | `nCName`, `nETBIOSName` |
+| Domain enumeration (partitions) | `(&(objectClass=crossRef)(nCName=*)(nETBIOSName=*))` | `nCName`, `nETBIOSName` |
 | Domain enumeration (SID) | `(objectSid=*)` | `objectSid` |
 
 Schema classes and attributes are enumerated via `ActiveDirectorySchema.GetCurrentSchema().FindAllClasses()` and `FindAllProperties()` respectively, rather than via direct LDAP queries. Each `ActiveDirectorySchemaClass` provides `.SchemaGuid`, `.Name` (the `lDAPDisplayName`), and `.DefaultObjectSecurityDescriptor` (SDDL string). Each `ActiveDirectorySchemaProperty` provides `.SchemaGuid` and `.Name`.
@@ -296,7 +296,7 @@ When computing inherited ACEs from schema defaults, if the parent ACE's trustee 
 
 ### Ignored Trustee SIDs
 
-ACEs for the following well-known SIDs are suppressed by default, since these principals already have inherent full control:
+ACEs for the following well-known SIDs are suppressed by default. These are highly-privileged or default trustees whose ACEs are usually not actionable for delegation review. They can be re-enabled via `--show-ignored-trustees`:
 
 | SID | Identity |
 |---|---|
@@ -648,7 +648,7 @@ The CSV output has **5 columns**:
 
 CSV rows are sorted deterministically using the following order:
 
-1. **Primary sort**: Resource column (DN), alphabetically
+1. **Primary sort**: Resource column, lexicographic string sort (includes DNs like `OU=Users,DC=example,DC=com`, schema references like `Schema: default security descriptor of class 'user'`, and `Global` for non-location-specific findings)
 2. **Secondary sort**: Category column, by priority order: `Warning` → `Owner` → `Deny ACE` → `Allow ACE` → `Built-in` → `Delegation` → `Expected deny ACE found` → `Expected allow ACE found` → `Expected deny ACE missing` → `Expected allow ACE missing`
 3. **Tertiary sort**: Trustee column, alphabetically
 
@@ -798,7 +798,7 @@ Non-canonical ACL detection uses `CommonAcl.IsCanonical` as the primary detectio
 ```csharp
 RawSecurityDescriptor rawSd = new RawSecurityDescriptor(bytes, 0);
 CommonSecurityDescriptor commonSd = new CommonSecurityDescriptor(
-    false, false, rawSd
+    false, true, rawSd  // isContainer=false, isDS=true for AD objects
 );
 bool isCanonical = commonSd.DiscretionaryAcl.IsCanonical;
 ```
