@@ -65,6 +65,8 @@ The `supportedControl` attribute is not required, as .NET Framework 2.0's `Direc
 
 A naming context is classified as a "known domain NC" if it appears as the `nCName` attribute of a `crossRef` object in `CN=Partitions,<configurationNamingContext>` that also has a `nETBIOSName` attribute. This distinguishes domain naming contexts from application partitions and other non-domain NCs.
 
+**Authoritative source**: The known-domain-NC set is built from `Forest.Domains` (see Step 1 in Section 9), which returns all domain NCs in the forest. The `crossRef` query against `CN=Partitions` is used only to retrieve `nETBIOSName` values (since the `Domain` class does not expose NetBIOS names), and the results are matched back to the `Forest.Domains` set by `nCName` ↔ DN. Both sources should produce the same domain set; the `crossRef` definition above provides the formal classification criteria, while `Forest.Domains` is the runtime enumeration mechanism. This same set is used consistently for AdminSDHolder selection, deleted-trustee detection, per-domain SDDL expansion, and all other domain-scoped operations.
+
 ### Recursive Traversal
 
 - **Schema partition**: Enumerated via `ActiveDirectorySchema.GetCurrentSchema().FindAllClasses()` and `FindAllProperties()` for class GUIDs, attribute GUIDs, and default security descriptors.
@@ -181,11 +183,12 @@ Only the specific attributes needed are requested via `DirectorySearcher.Propert
 ```csharp
 searcher.PropertiesToLoad.AddRange(new string[] {
     "nTSecurityDescriptor", "objectClass", "objectSid",
-    "adminCount", "msDS-KrbTgtLinkBl", "serverReference"
+    "adminCount", "msDS-KrbTgtLinkBl", "serverReference",
+    "distinguishedName"
 });
 ```
 
-This reduces network traffic compared to retrieving all attributes.
+This reduces network traffic compared to retrieving all attributes. The `distinguishedName` attribute is included because it is needed for CSV Resource values (the object's DN), SID → DN cache population, and progress reporting. While .NET's `SearchResult.Path` (ADsPath) also encodes the DN, it includes the LDAP URI prefix and server name, requiring parsing to extract the bare DN — explicitly requesting `distinguishedName` via `PropertiesToLoad` provides the DN directly and avoids ambiguity.
 
 ---
 
@@ -558,8 +561,8 @@ When `ContainerInherit` is not set, no inheritance scope text is included.
 
 - Establish connection via managed .NET APIs: by default, `Domain.GetCurrentDomain()` and `Forest.GetCurrentForest()` use the Windows DC locator (AD sites and services) for site-aware DC discovery. When `--server` is specified, use `new DirectoryContext(DirectoryContextType.DirectoryServer, serverName)` with `Domain.GetDomain(ctx)` and `Forest.GetForest(ctx)` to route through the specified DC.
 - Read RootDSE for naming contexts and schema/configuration DNs
-- **Domain enumeration and SID collection**: Use `Forest.GetCurrentForest().Domains` (or `Forest.GetForest(ctx).Domains` with `--server`) to enumerate all domains in the forest. For each `Domain` object, obtain a single `DirectoryEntry` via `using (DirectoryEntry entry = domain.GetDirectoryEntry())` (since the returned `DirectoryEntry` implements `IDisposable` and holds unmanaged ADSI handles), then read `Properties["objectSid"]` — note that `Properties["objectSid"]` returns a `PropertyValueCollection`, so the value must be indexed and cast: `(byte[])entry.Properties["objectSid"][0]`, then parsed with `new SecurityIdentifier(bytes, 0)`. The domain's DN can be read from `entry.Properties["distinguishedName"][0]` within the same `using` scope. This collects SIDs for **all** known domain NCs — not just the current domain — which is required for deleted-trustee detection (Section 7) and per-domain SDDL alias expansion (Step 4). The `Domain.Name` property provides the DNS name.
-- **NetBIOS name mapping**: Since `Domain` objects do not expose NetBIOS names directly, query `CN=Partitions,<configurationNC>` via `DirectorySearcher` with filter `(&(objectClass=crossRef)(nCName=*)(nETBIOSName=*))` to retrieve the `nETBIOSName` for each domain NC, and map them to the domains collected above by matching `nCName` to each domain's distinguished name.
+- **Domain enumeration and SID collection**: Use `Forest.GetCurrentForest().Domains` (or `Forest.GetForest(ctx).Domains` with `--server`) to enumerate all domains in the forest — this is the authoritative runtime source for the known-domain-NC set (see Section 1, "Known Domain NC Definition"). For each `Domain` object, obtain a single `DirectoryEntry` via `using (DirectoryEntry entry = domain.GetDirectoryEntry())` (since the returned `DirectoryEntry` implements `IDisposable` and holds unmanaged ADSI handles), then read `Properties["objectSid"]` — note that `Properties["objectSid"]` returns a `PropertyValueCollection`, so the value must be indexed and cast: `(byte[])entry.Properties["objectSid"][0]`, then parsed with `new SecurityIdentifier(bytes, 0)`. The domain's DN can be read from `entry.Properties["distinguishedName"][0]` within the same `using` scope. This collects SIDs for **all** known domain NCs — not just the current domain — which is required for deleted-trustee detection (Section 7) and per-domain SDDL alias expansion (Step 4). The `Domain.Name` property provides the DNS name.
+- **NetBIOS name mapping**: Since `Domain` objects do not expose NetBIOS names directly, query `CN=Partitions,<configurationNC>` via `DirectorySearcher` with filter `(&(objectClass=crossRef)(nCName=*)(nETBIOSName=*))` to retrieve the `nETBIOSName` for each domain NC, and map them to the `Forest.Domains` set collected above by matching each `crossRef` object's `nCName` to the corresponding domain's distinguished name. This reconciles the `crossRef`-based definition from Section 1 with the managed API enumeration — both should produce the same set of domain NCs.
 - Report progress: `Console.Error.WriteLine(String.Format("[*] Connected to {0}", targetServer))` where `targetServer` is the `--server` value if specified, or the domain controller hostname obtained via `Domain.GetCurrentDomain().FindDomainController().Name` when using the default DC locator path
 
 ### Step 2: Schema Loading
@@ -736,7 +739,7 @@ XmlReaderSettings settings = new XmlReaderSettings();
 settings.Schemas.Add(null, xsdPath);
 settings.ValidationType = ValidationType.Schema;
 settings.ValidationEventHandler += delegate(object sender, ValidationEventArgs e) {
-    throw new XmlSchemaValidationException(e.Message);
+    throw e.Exception;
 };
 using (XmlReader reader = XmlReader.Create(xmlPath, settings))
 {
@@ -745,7 +748,7 @@ using (XmlReader reader = XmlReader.Create(xmlPath, settings))
 }
 ```
 
-If the XML does not conform to the XSD schema, the `ValidationEventHandler` fires and throws an exception, preventing invalid definitions from being processed. This provides formal structural validation without third-party libraries.
+If the XML does not conform to the XSD schema, the `ValidationEventHandler` fires and throws `e.Exception` (the `XmlSchemaValidationException` from `ValidationEventArgs`), which preserves line number, position, and inner exception context for precise error reporting. This prevents invalid definitions from being processed and provides formal structural validation without third-party libraries.
 
 ### Access Mask Representation
 
