@@ -781,13 +781,13 @@ The delegation XML schema defines:
 The XML schema also defines elements for configuring risk classification rules (referenced by Sections 16.3.2, 16.4.3, and 17.4). These may appear in the same XML files as delegation definitions or in separate configuration XML files:
 
 - **`<unsafeTrustees>`**: Container for unsafe trustee definitions. Contains `<add>` and `<remove>` child elements.
-  - **`<add sid="...">`**: Adds a SID to the unsafe trustee set. The `sid` attribute may contain a literal SID (e.g., `S-1-5-7`) or a pattern with the `<domainSID>` placeholder (e.g., `<domainSID>-513`). Patterns are expanded at runtime for each known domain.
+  - **`<add sid="...">`**: Adds a SID to the unsafe trustee set. The `sid` attribute may contain a literal SID (e.g., `S-1-5-7`) or a pattern with a placeholder (e.g., `{domainSID}-513`). Patterns are expanded at runtime for each known domain.
   - **`<remove sid="...">`**: Removes a SID from the baseline unsafe trustee set. Uses the same SID/pattern syntax as `<add>`.
 
 - **`<tier0Resources>`**: Container for Tier 0 resource definitions. Contains `<add>` and `<remove>` child elements.
   - **`<add>`**: Adds a resource to the Tier 0 set. Supports the following attributes (at least one required):
-    - `sid="..."` — Match by SID or SID pattern (e.g., `<domainSID>-500`)
-    - `dn="..."` — Match by DN pattern (e.g., `CN=AdminSDHolder,CN=System,<domainDN>`)
+    - `sid="..."` — Match by SID or SID pattern (e.g., `{domainSID}-500`)
+    - `dn="..."` — Match by DN pattern (e.g., `CN=AdminSDHolder,CN=System,{domainDN}`)
     - `objectClass="..."` — Match by object class (e.g., `trustedDomain`)
     - `tier="..."` — Optional sub-tier label (e.g., `Tier0-Critical`, `Tier0-High`; defaults to `Tier0`)
   - **`<remove>`**: Removes a resource from the baseline Tier 0 set. Uses the same attribute syntax as `<add>`.
@@ -801,7 +801,7 @@ The XML schema also defines elements for configuring risk classification rules (
     - `riskLevel="..."` — Optional custom risk level override (`Critical`, `High`, `Medium`, `Informational`)
   - **`<remove>`**: Removes a delegation type from the baseline dangerous set. Uses `rights` and `objectType` attributes to identify the entry to remove.
 
-At runtime, SID and DN patterns containing `<domainSID>` or `<domainDN>` placeholders are expanded for each known domain, similarly to how delegation location wildcards (`DC=*`) are expanded (see Location Wildcards above). The `<forestRootDN>` placeholder is expanded using the forest root domain's DN.
+**Placeholder syntax:** Placeholders in SID and DN patterns use curly-brace syntax (`{domainSID}`, `{domainDN}`, `{forestRootDN}`) rather than angle brackets, avoiding the need for XML entity escaping. At runtime, `{domainSID}` and `{domainDN}` are expanded for each known domain, and `{forestRootDN}` is expanded using the forest root domain's DN. This is analogous to how delegation location wildcards (`DC=*`) are expanded (see Location Wildcards above).
 
 ### Location Wildcards
 
@@ -1159,9 +1159,9 @@ The baseline unsafe trustee list is configurable via the XML delegation/template
 
 - Adding custom unsafe trustee SIDs (e.g., organization-specific broad groups)
 - Removing baseline unsafe trustee SIDs (e.g., if an organization has locked down `Pre-Windows 2000 Compatible Access`)
-- Specifying trustees by SID pattern (e.g., `<domainSID>-513` for Domain Users across all domains)
+- Specifying trustees by SID pattern (e.g., `{domainSID}-513` for Domain Users across all domains)
 
-At runtime, SID patterns containing `<domainSID>` are expanded for each known domain, similarly to how delegation location wildcards (`DC=*`) are expanded in Section 11.
+At runtime, SID patterns containing `{domainSID}` are expanded for each known domain, similarly to how delegation location wildcards (`DC=*`) are expanded in Section 11.
 
 ### 16.4. Tier 0 (Critical) Resource Identification
 
@@ -1427,6 +1427,8 @@ At startup (before the main scan), the tool:
    ```
 
 **Rationale for `WindowsIdentity.Groups` over `tokenGroups` via LDAP:** ADeleginator uses the `memberOf` attribute via an LDAP query, which only returns direct group memberships and misses nested/transitive groups. The criticism document prescribes `tokenGroups` via `DirectoryEntry.RefreshCache()`, but `WindowsIdentity.Groups` provides the same transitive group resolution without requiring an LDAP query. This avoids `--server` targeting concerns (since it reads from the local access token, not from a directory server) and is the idiomatic .NET Framework 2.0 approach. The `Groups` property returns `IdentityReferenceCollection` containing `SecurityIdentifier` objects, which can be iterated directly.
+
+**Limitation:** `WindowsIdentity.GetCurrent().Groups` reflects the group memberships in the current process's access token, which is populated at logon time. If the operator's group memberships have changed since logon (e.g., groups added or removed), the token may be stale. Additionally, when the tool is run with explicit credentials (`--username`) targeting a different domain, the `Current User Can Exploit` column reflects the local process identity's groups, not the explicit credential's groups. This is an acceptable trade-off: the `Current User Can Exploit` column is an advisory annotation (not a security control), and the primary risk classification (`Risk Level` column) is unaffected since it uses the policy-based unsafe trustee set.
 
 **Fixes for ADeleginator bugs:**
 
