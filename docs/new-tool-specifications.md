@@ -558,7 +558,7 @@ When `ContainerInherit` is not set, no inheritance scope text is included.
 
 - Establish connection via managed .NET APIs: by default, `Domain.GetCurrentDomain()` and `Forest.GetCurrentForest()` use the Windows DC locator (AD sites and services) for site-aware DC discovery. When `--server` is specified, use `new DirectoryContext(DirectoryContextType.DirectoryServer, serverName)` with `Domain.GetDomain(ctx)` and `Forest.GetForest(ctx)` to route through the specified DC.
 - Read RootDSE for naming contexts and schema/configuration DNs
-- **Domain enumeration and SID collection**: Use `Forest.GetCurrentForest().Domains` (or `Forest.GetForest(ctx).Domains` with `--server`) to enumerate all domains in the forest. For each `Domain` object, call `domain.GetDirectoryEntry().Properties["objectSid"]` to read its SID — note that `Properties["objectSid"]` returns a `PropertyValueCollection`, so the value must be indexed and cast: `(byte[])domain.GetDirectoryEntry().Properties["objectSid"][0]`, then parsed with `new SecurityIdentifier(bytes, 0)`. This collects SIDs for **all** known domain NCs — not just the current domain — which is required for deleted-trustee detection (Section 7) and per-domain SDDL alias expansion (Step 4). The `Domain.Name` property provides the DNS name.
+- **Domain enumeration and SID collection**: Use `Forest.GetCurrentForest().Domains` (or `Forest.GetForest(ctx).Domains` with `--server`) to enumerate all domains in the forest. For each `Domain` object, obtain a single `DirectoryEntry` via `domain.GetDirectoryEntry()` in a `using` block (since the returned `DirectoryEntry` implements `IDisposable` and holds unmanaged ADSI handles), then read `Properties["objectSid"]` — note that `Properties["objectSid"]` returns a `PropertyValueCollection`, so the value must be indexed and cast: `(byte[])entry.Properties["objectSid"][0]`, then parsed with `new SecurityIdentifier(bytes, 0)`. The domain's DN can be read from `entry.Properties["distinguishedName"][0]` within the same `using` scope. This collects SIDs for **all** known domain NCs — not just the current domain — which is required for deleted-trustee detection (Section 7) and per-domain SDDL alias expansion (Step 4). The `Domain.Name` property provides the DNS name.
 - **NetBIOS name mapping**: Since `Domain` objects do not expose NetBIOS names directly, query `CN=Partitions,<configurationNC>` via `DirectorySearcher` with filter `(&(objectClass=crossRef)(nCName=*)(nETBIOSName=*))` to retrieve the `nETBIOSName` for each domain NC, and map them to the domains collected above by matching `nCName` to each domain's distinguished name.
 - Report progress: `Console.Error.WriteLine(String.Format("[*] Connected to {0}", targetServer))` where `targetServer` is the `--server` value if specified, or the domain controller hostname obtained via `Domain.GetCurrentDomain().FindDomainController().Name` when using the default DC locator path
 
@@ -571,7 +571,7 @@ When `ContainerInherit` is not set, no inheritance scope text is included.
 
 ### Step 3: Delegation and Template Loading
 
-- Load built-in delegations from the embedded XML resource (via `Assembly.GetManifestResourceStream()` and `XmlDocument.Load(stream)`)
+- Load built-in delegations from the embedded XML resource via `Assembly.GetManifestResourceStream()`, wrapping the returned `Stream` in a `using` block (since it implements `IDisposable`), then calling `XmlDocument.Load(stream)` within that scope
 - Optionally load user-provided templates (`--templates`) and delegations (`--delegations`) from external XML files, validated against XSD schema
 - For each delegation, derive expected ACEs by resolving trustees and locations, and index them by SID → Location
 
@@ -691,13 +691,17 @@ For each location/result pair in the scan results:
 - **Stdout output**: Wrap `Console.OpenStandardOutput()` in a `StreamWriter`:
 
 ```csharp
-StreamWriter writer = new StreamWriter(
+using (StreamWriter writer = new StreamWriter(
     Console.OpenStandardOutput(),
-    new UTF8Encoding(false)
-);
+    new UTF8Encoding(false)))
+{
+    // Write CSV rows via writer.WriteLine(...)
+    // The using block ensures Flush() and Dispose() are called,
+    // preventing truncation of buffered output.
+}
 ```
 
-**Do NOT use `Console.Out` directly** for CSV output, as `Console.OutputEncoding` defaults to the system's OEM code page on Windows.
+**Do NOT use `Console.Out` directly** for CSV output, as `Console.OutputEncoding` defaults to the system's OEM code page on Windows. The `StreamWriter` must be disposed (or at minimum flushed) after all CSV rows are written — `StreamWriter` buffers output internally, so omitting `Flush()`/`Dispose()` risks truncating the final bytes. The `using` block above handles this automatically.
 
 - **RFC 4180 quoting rules**: Fields containing commas, double-quotes, or newlines are enclosed in double-quotes. Embedded double-quotes are escaped as `""`. The line terminator is CRLF. This is implemented manually (~20 lines of code), as .NET Framework 2.0 has no built-in CSV library.
 
