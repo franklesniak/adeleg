@@ -630,7 +630,7 @@ When `ContainerInherit` is not set, no inheritance scope text is included.
 
 ### Triggering CSV Export
 
-CSV export is triggered by the `--csv <path>` command-line argument. If the path is `-`, output goes to stdout. Otherwise, a file is created (or truncated if it exists).
+CSV export is triggered by the `--csv <path>` command-line argument. If the path is `-`, output goes to stdout. Otherwise, a file is created (or truncated if it exists). If neither `--csv` nor `--risk-csv` is specified, the tool writes CSV to stdout by default (equivalent to `--csv -`). This ensures the tool always produces usable output, even when run without explicit output arguments.
 
 ### CSV Header Row
 
@@ -922,7 +922,7 @@ This mode enables troubleshooting deployment issues (connectivity, credential, c
 
 The tool should support a `--log <path>` option that writes all diagnostic messages (those normally emitted to stderr) to the specified file **in addition to** stderr. The log file should include UTC timestamps in ISO 8601 format (`yyyy-MM-ddTHH:mm:ss.fffZ`) prepended to each line, generated via `DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")`.
 
-**Implementation in .NET Framework 2.0:** Use a `StreamWriter` wrapping a `FileStream` opened with `FileMode.Create` and `FileAccess.Write`. All stderr output — both `Console.Error.Write()` and `Console.Error.WriteLine()` calls — should be routed through a single logging helper method that mirrors each message to the log `StreamWriter` (with a UTC timestamp prefix) in addition to stderr. This ensures that partial-line progress output (e.g., via `Console.Error.Write()`) is also captured in the log. The `StreamWriter` must be disposed via a `using` block (or explicit `Close()` in a `finally`) at tool exit to ensure all buffered content is flushed.
+**Implementation in .NET Framework 2.0:** Use a `StreamWriter` wrapping a `FileStream` opened with `FileMode.Create` and `FileAccess.Write`. All stderr output — both `Console.Error.Write()` and `Console.Error.WriteLine()` calls — should be routed through a single logging helper. The helper maintains a boolean flag tracking whether the current line is "new" (i.e., the previous call ended with a newline). Timestamps are prepended **only at the start of a new line** — not on every write call. For `Write()` calls (partial-line output such as progress updates), the helper writes the text to the log without a timestamp prefix unless it is the first write after a newline. For `WriteLine()` calls, the helper prepends the timestamp if the line is new, writes the text, and marks the next position as a new line. This line-buffered approach prevents timestamps from appearing mid-line while still capturing all partial-line progress output in the log file. The `StreamWriter` must be disposed via a `using` block (or explicit `Close()` in a `finally`) at tool exit to ensure all buffered content is flushed.
 
 ### 13.3. Summary Statistics
 
@@ -1012,7 +1012,7 @@ When using `System.DirectoryServices` with `DirectoryEntry`, LDAPS certificate v
 
 If `AuthenticationTypes.Secure` is used (the recommended default), the connection uses SASL/Kerberos signing and encryption without requiring LDAPS at all. The tool relies on this default secure behavior and does not specify low-level certificate validation details.
 
-If an explicit LDAPS connection is needed (e.g., `"LDAP://server:636"` with `AuthenticationTypes.SecureSocketsLayer`), the Windows trust store evaluation applies automatically.
+If an explicit LDAPS connection is needed (e.g., `"LDAP://server:636"` with `AuthenticationTypes.Secure | AuthenticationTypes.SecureSocketsLayer`), the Windows trust store evaluation applies automatically. Both flags must be combined: `Secure` preserves SSPI/Kerberos/NTLM authentication, while `SecureSocketsLayer` enables TLS transport. Using `SecureSocketsLayer` alone may fall back to simple bind (see Section 2, "LDAPS and Encrypted Transport").
 
 ### 14.3. Audit Trail
 
@@ -1055,7 +1055,7 @@ The tool assumes all naming contexts belong to the same forest. This is the expe
 
 **Decision: Carry forward with explicit confirmation.**
 
-The tool loads the schema dynamically at runtime via `ActiveDirectorySchema.GetCurrentSchema().FindAllClasses()` and `FindAllProperties()`. Custom schema extensions (additional classes and attributes) are fully supported — they appear in the schema enumeration and their GUIDs are loaded into the schema maps used for rights interpretation.
+The tool loads the schema dynamically at runtime via `ActiveDirectorySchema.GetCurrentSchema().FindAllClasses()` and `FindAllProperties()` (or `ActiveDirectorySchema.GetSchema(ctx).FindAllClasses()` and `.GetSchema(ctx).FindAllProperties()` when `--server` is specified, as defined in Section 9, Step 2). Custom schema extensions (additional classes and attributes) are fully supported — they appear in the schema enumeration and their GUIDs are loaded into the schema maps used for rights interpretation.
 
 Custom schema attributes referenced in ACE `ObjectType` GUIDs are resolved correctly because the schema maps are built from the live schema, not from a static list.
 
@@ -1145,11 +1145,11 @@ The following SIDs are recognized as unsafe trustees by default. SID-based match
 | 2 | `S-1-5-11` | Authenticated Users | Includes every authenticated identity in the forest |
 | 3 | `S-1-5-7` | Anonymous Logon | Unauthenticated access; dangerous if delegations are granted to it |
 | 4 | `S-1-5-32-554` | Pre-Windows 2000 Compatible Access | Often includes `Authenticated Users` as a member; delegations to this group are effectively delegations to all users |
-| 5 | `<domainSID>-513` | Domain Users (per domain) | Every domain user account is a member |
-| 6 | `<domainSID>-515` | Domain Computers (per domain) | Every domain-joined computer is a member; compromise of any workstation grants these permissions |
-| 7 | `<domainSID>-514` | Domain Guests (per domain) | Guest accounts; should never hold delegations |
+| 5 | `{domainSID}-513` | Domain Users (per domain) | Every domain user account is a member |
+| 6 | `{domainSID}-515` | Domain Computers (per domain) | Every domain-joined computer is a member; compromise of any workstation grants these permissions |
+| 7 | `{domainSID}-514` | Domain Guests (per domain) | Guest accounts; should never hold delegations |
 
-Domain-relative SIDs (those with a `<domainSID>-` prefix) are expanded for each known domain discovered via `Forest.GetCurrentForest().Domains` (or `Forest.GetForest(ctx).Domains` with `--server`), using the domain SID retrieved from `Domain.GetDirectoryEntry().Properties["objectSid"]` parsed with `new SecurityIdentifier(bytes, 0)`.
+Domain-relative SIDs (those with a `{domainSID}-` prefix) are expanded for each known domain discovered via `Forest.GetCurrentForest().Domains` (or `Forest.GetForest(ctx).Domains` with `--server`), using the domain SID retrieved within a `using` block: `using (DirectoryEntry entry = domain.GetDirectoryEntry()) { byte[] sidBytes = (byte[])entry.Properties["objectSid"][0]; SecurityIdentifier domainSid = new SecurityIdentifier(sidBytes, 0); }`. The `[0]` index is required because `Properties["objectSid"]` returns a `PropertyValueCollection`, and the `using` block prevents ADSI handle leaks (as specified in Section 9, Step 1).
 
 **Comparison with ADeleginator:** ADeleginator uses name-based regex matching for `"Domain Users"`, `"Authenticated Users"`, and `"Everyone"`. The new tool uses SID-based matching for all baseline trustees, which is correct in localized environments and immune to naming variations. ADeleginator omits Anonymous Logon, Pre-Windows 2000 Compatible Access, Domain Computers, and Domain Guests — all of which are legitimate unsafe trustee concerns.
 
@@ -1175,15 +1175,15 @@ The following resources are classified as Tier 0 by default. Resources are ident
 
 | # | SID Pattern | Identity | Rationale |
 |---|---|---|---|
-| 1 | `<domainSID>-500` | Administrator | Built-in administrator account — full domain control |
-| 2 | `<domainSID>-502` | krbtgt | Kerberos ticket-granting account — compromise enables Golden Ticket attacks |
-| 3 | `<domainSID>-512` | Domain Admins | Full administrative control over the domain |
-| 4 | `<domainSID>-516` | Domain Controllers | Machine accounts for all DCs |
-| 5 | `<domainSID>-518` | Schema Admins | Can modify the AD schema — forest-wide impact (forest root domain only) |
-| 6 | `<domainSID>-519` | Enterprise Admins | Full administrative control over the entire forest (forest root domain only) |
-| 7 | `<domainSID>-521` | Read-Only Domain Controllers | RODC machine accounts |
-| 8 | `<domainSID>-526` | Key Admins | Can perform privileged key operations |
-| 9 | `<domainSID>-527` | Enterprise Key Admins | Forest-wide key administration (forest root domain only) |
+| 1 | `{domainSID}-500` | Administrator | Built-in administrator account — full domain control |
+| 2 | `{domainSID}-502` | krbtgt | Kerberos ticket-granting account — compromise enables Golden Ticket attacks |
+| 3 | `{domainSID}-512` | Domain Admins | Full administrative control over the domain |
+| 4 | `{domainSID}-516` | Domain Controllers | Machine accounts for all DCs |
+| 5 | `{forestRootDomainSID}-518` | Schema Admins | Can modify the AD schema — forest-wide impact (forest root domain only) |
+| 6 | `{forestRootDomainSID}-519` | Enterprise Admins | Full administrative control over the entire forest (forest root domain only) |
+| 7 | `{domainSID}-521` | Read-Only Domain Controllers | RODC machine accounts |
+| 8 | `{domainSID}-526` | Key Admins | Can perform privileged key operations |
+| 9 | `{forestRootDomainSID}-527` | Enterprise Key Admins | Forest-wide key administration (forest root domain only) |
 | 10 | `S-1-5-32-544` | BUILTIN\Administrators | Local administrators group |
 | 11 | `S-1-5-32-548` | Account Operators | Can modify most user and group accounts |
 | 12 | `S-1-5-32-549` | Server Operators | Can administer domain controllers |
@@ -1196,17 +1196,17 @@ The following resources are classified as Tier 0 by default. Resources are ident
 
 | # | Identification Method | Identity | Rationale |
 |---|---|---|---|
-| 15 | DN = `<domainDN>` (the domain root object) | Domain root object | ACEs here can grant domain-wide permissions via inheritance |
-| 16 | DN = `CN=AdminSDHolder,CN=System,<domainDN>` | AdminSDHolder | SDProp copies this DACL to all protected accounts |
-| 17 | DN = `OU=Domain Controllers,<domainDN>` | Domain Controllers OU | Contains all DC machine accounts |
-| 18 | DN = `CN=Users,<domainDN>` | Users container | Default location for privileged accounts |
-| 19 | DN = `CN=Schema,CN=Configuration,<forestRootDN>` | Schema partition root | Controls the AD schema |
-| 20 | DN = `CN=Configuration,<forestRootDN>` | Configuration partition root | Controls forest-wide configuration |
-| 21 | DN = `CN=Sites,CN=Configuration,<forestRootDN>` | Sites container | Controls AD replication topology |
-| 22 | DN = `CN=Partitions,CN=Configuration,<forestRootDN>` | Partitions container | Controls naming context references |
+| 15 | DN = `{domainDN}` (the domain root object) | Domain root object | ACEs here can grant domain-wide permissions via inheritance |
+| 16 | DN = `CN=AdminSDHolder,CN=System,{domainDN}` | AdminSDHolder | SDProp copies this DACL to all protected accounts |
+| 17 | DN = `OU=Domain Controllers,{domainDN}` | Domain Controllers OU | Contains all DC machine accounts |
+| 18 | DN = `CN=Users,{domainDN}` | Users container | Default location for privileged accounts |
+| 19 | DN = `CN=Schema,CN=Configuration,{forestRootDN}` | Schema partition root | Controls the AD schema |
+| 20 | DN = `CN=Configuration,{forestRootDN}` | Configuration partition root | Controls forest-wide configuration |
+| 21 | DN = `CN=Sites,CN=Configuration,{forestRootDN}` | Sites container | Controls AD replication topology |
+| 22 | DN = `CN=Partitions,CN=Configuration,{forestRootDN}` | Partitions container | Controls naming context references |
 | 23 | `objectClass=trustedDomain` | Trust objects | Control trust relationships — can enable cross-forest attack paths |
-| 24 | `objectClass=pKICertificateTemplate` in `CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,<forestRootDN>` | Certificate templates | Misconfigured templates enable ESC1–ESC8 privilege escalation |
-| 25 | `objectClass=pKIEnrollmentService` in `CN=Enrollment Services,CN=Public Key Services,CN=Services,CN=Configuration,<forestRootDN>` | Enterprise CA objects | Certificate Authority enrollment service objects |
+| 24 | `objectClass=pKICertificateTemplate` in `CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,{forestRootDN}` | Certificate templates | Misconfigured templates enable ESC1–ESC8 privilege escalation |
+| 25 | `objectClass=pKIEnrollmentService` in `CN=Enrollment Services,CN=Public Key Services,CN=Services,CN=Configuration,{forestRootDN}` | Enterprise CA objects | Certificate Authority enrollment service objects |
 | 26 | Objects with `objectClass=groupPolicyContainer` linked (via `gpLink`) to Tier 0 OUs/domains | GPOs linked to Tier 0 containers | Modification of linked GPOs grants code execution on Tier 0 systems |
 
 **Comparison with ADeleginator:** ADeleginator defines 20 resources by name, matched via regex. The new tool uses SID-based matching for principals (language-independent, unambiguous) and DN-pattern/object-class matching for structural objects (structural, not name-dependent). The new list is significantly expanded — ADeleginator omits Schema/Configuration partition roots, Sites, Partitions, trust objects, ADCS certificate templates and enrollment services, Key Admins, Enterprise Key Admins, and RODC accounts.
@@ -1215,8 +1215,8 @@ The following resources are classified as Tier 0 by default. Resources are ident
 
 ADeleginator includes `"GPO linked to Tier Zero container"` as a Tier 0 resource but provides no mechanism to resolve which GPOs are linked. The new tool implements this by:
 
-1. For each Tier 0 container identified above (domain root, Domain Controllers OU, Users container), read the `gpLink` attribute (available via `DirectoryEntry.Properties["gpLink"]`).
-2. Parse the `gpLink` value, which is a string of the form `[LDAP://CN={GUID},CN=Policies,CN=System,<domainDN>;status]`, extracting each linked GPO's DN.
+1. For each Tier 0 container identified above (domain root, Domain Controllers OU, Users container), read the `gpLink` attribute via `(string)entry.Properties["gpLink"][0]` (note: `Properties["gpLink"]` returns a `PropertyValueCollection`, so `[0]` indexing and a `string` cast are required; the `DirectoryEntry` should be obtained via `using` to prevent handle leaks).
+2. Parse the `gpLink` value, which is a string of the form `[LDAP://CN={GUID},CN=Policies,CN=System,{domainDN};status]`, extracting each linked GPO's DN.
 3. Add each linked GPO DN to the Tier 0 resource set.
 4. This resolution is performed once during the bootstrap phase (after domain enumeration, before the main scan) and cached for the duration of the scan.
 
@@ -1257,8 +1257,8 @@ The following delegation types are classified as dangerous by default, organized
 | 1 | Owner SID matches unsafe trustee | `"owns"` | Ownership grants implicit WRITE_DAC + READ_CONTROL — the owner can rewrite the entire DACL |
 | 2 | `ActiveDirectoryRights.WriteOwner` | `"Change the owner"` | Can take ownership, then rewrite the DACL |
 | 3 | `ActiveDirectoryRights.WriteDacl` | `"add/delete delegations"` | Can directly modify the DACL to grant any permission |
-| 4 | `GenericAll` (value `0xF01FF`) present in access mask | *(not detected by ADeleginator)* | Full control — grants every possible permission on the object |
-| 5 | `GenericWrite` (value `0x20028`) present in access mask | *(not detected by ADeleginator)* | `ReadControl` + `WriteProperty` + `Self` — very broad write access |
+| 4 | `(rule.ActiveDirectoryRights & ActiveDirectoryRights.GenericAll) == ActiveDirectoryRights.GenericAll` — i.e., all bits of `0xF01FF` are set in the access mask | *(not detected by ADeleginator)* | Full control — grants every possible permission on the object |
+| 5 | `(rule.ActiveDirectoryRights & ActiveDirectoryRights.GenericWrite) == ActiveDirectoryRights.GenericWrite` — i.e., all bits of `0x20028` are set in the access mask | *(not detected by ADeleginator)* | `ReadControl` + `WriteProperty` + `Self` — very broad write access |
 
 **Note on GenericAll and GenericWrite:** The `System.DirectoryServices.ActiveDirectoryRights` enum defines `GenericAll` (value `983551` / `0xF01FF`) which combines all standard and specific rights into full control, and `GenericWrite` (value `131112` / `0x20028`) which decomposes into `ReadControl` (`0x20000`) | `WriteProperty` (`0x20`) | `Self` (`0x8`). The `ReadControl` component is a read-only right, so the dangerous components of `GenericWrite` are `WriteProperty` and `Self`.
 
@@ -1312,7 +1312,7 @@ The following delegation types are classified as dangerous by default, organized
 
 The dangerous delegation types in Categories B and E require comparing the `ActiveDirectoryAccessRule.ObjectType` GUID against specific schema attribute GUIDs and control access right GUIDs. These GUIDs are resolved during the schema loading phase (Step 2 of the pipeline described in Section 9):
 
-1. During schema attribute enumeration (`ActiveDirectorySchema.GetCurrentSchema().FindAllProperties()`), build a `Dictionary<string, Guid>` mapping attribute `Name` (lDAPDisplayName) to `SchemaGuid`. This name-to-GUID map is needed because the dangerous attribute definitions reference attributes by name.
+1. During schema attribute enumeration (via `ActiveDirectorySchema.GetCurrentSchema().FindAllProperties()`, or `.GetSchema(ctx).FindAllProperties()` with `--server` — see Section 9, Step 2), build a `Dictionary<string, Guid>` mapping attribute `Name` (lDAPDisplayName) to `SchemaGuid`. This name-to-GUID map is needed because the dangerous attribute definitions reference attributes by name.
 2. Look up each dangerous attribute by name (e.g., `"servicePrincipalName"`, `"msDS-AllowedToActOnBehalfOfOtherIdentity"`) and retrieve its `SchemaGuid`.
 3. Store the resolved dangerous attribute GUIDs in a `Dictionary<Guid, string>` mapping GUID to attack description, for O(1) lookup during the scan.
 4. If a dangerous attribute name is not found in the schema (e.g., `msDS-KeyCredentialLink` may not exist in older schema versions), log a warning to stderr and skip that detection rule.
@@ -1327,7 +1327,7 @@ DCSync requires **both** `DS-Replication-Get-Changes` and `DS-Replication-Get-Ch
 2. When an `ExtendedRight` ACE with the `DS-Replication-Get-Changes-All` GUID is found on the same domain root object for the same trustee SID, flag the combination as a `Critical` risk DCSync finding.
 3. Each individual replication right is still flagged independently (as `High` risk), since they are unusual for non-DC principals.
 
-**Implementation in .NET Framework 2.0:** Use a `Dictionary<string, Dictionary<string, int>>` keyed by resource DN, then by trustee SID `Value`, where the `int` value is a bitmask tracking which replication rights have been seen (bit 0 / value `1` = DS-Replication-Get-Changes, bit 1 / value `2` = DS-Replication-Get-Changes-All; value `3` = both present = DCSync compound condition). After scanning each domain root object's ACEs, check for trustee entries where the bitmask equals `3`.
+**Implementation in .NET Framework 2.0:** Use a `Dictionary<string, Dictionary<string, int>>` where the outer dictionary is keyed by resource DN with `StringComparer.OrdinalIgnoreCase` (since Distinguished Names are case-insensitive in Active Directory), and the inner dictionary is keyed by trustee SID `Value` (case-sensitive, as SID strings have a fixed format). The `int` value is a bitmask tracking which replication rights have been seen (bit 0 / value `1` = DS-Replication-Get-Changes, bit 1 / value `2` = DS-Replication-Get-Changes-All; value `3` = both present = DCSync compound condition). After scanning each domain root object's ACEs, check for trustee entries where the bitmask equals `3`.
 
 ### 17.4. Configurable Dangerous Delegation Definitions
 
@@ -1547,7 +1547,7 @@ The following table summarizes the specific ADeleginator defects and limitations
 | Tier 0 object class set | O(1) lookup for class-based matching | `Dictionary<string, bool>` keyed by `objectClass` value (`StringComparer.OrdinalIgnoreCase`) |
 | Dangerous attribute GUIDs | O(1) lookup during ACE evaluation | `Dictionary<Guid, string>` mapping GUID to attack description |
 | Dangerous control access right GUIDs | O(1) lookup during ACE evaluation | `Dictionary<Guid, string>` mapping GUID to attack description |
-| DCSync tracking | Compound detection per trustee per resource | `Dictionary<string, Dictionary<string, int>>` keyed by resource DN, then trustee SID Value; `int` bitmask where bit 0 (value `1`) = DS-Replication-Get-Changes, bit 1 (value `2`) = DS-Replication-Get-Changes-All; value `3` = DCSync compound |
+| DCSync tracking | Compound detection per trustee per resource | `Dictionary<string, Dictionary<string, int>>` keyed by resource DN (`StringComparer.OrdinalIgnoreCase`), then trustee SID Value; `int` bitmask where bit 0 (value `1`) = DS-Replication-Get-Changes, bit 1 (value `2`) = DS-Replication-Get-Changes-All; value `3` = DCSync compound |
 | Current user group SIDs | Exploitability annotation | `Dictionary<string, bool>` keyed by `SecurityIdentifier.Value` |
 
 ### 20.6. Performance Impact
