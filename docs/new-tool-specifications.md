@@ -107,7 +107,7 @@ The tool should default to using `Domain.GetCurrentDomain()` for DC discovery (w
 | Property sets | `(&(objectClass=controlAccessRight)(validAccesses=48)(rightsGuid=*))` | `rightsGuid`, `displayName` |
 | Validated writes | `(&(objectClass=controlAccessRight)(validAccesses=8)(rightsGuid=*))` | `rightsGuid`, `displayName` |
 | Control access rights | `(&(objectClass=controlAccessRight)(validAccesses=256)(rightsGuid=*))` | `rightsGuid`, `displayName` |
-| All naming contexts (main scan) | `(objectClass=*)` | `nTSecurityDescriptor`, `objectClass`, `objectSID`, `adminCount`, `msDS-KrbTgtLinkBl`, `serverReference` |
+| All naming contexts (main scan) | `(objectClass=*)` | `nTSecurityDescriptor`, `objectClass`, `objectSid`, `adminCount`, `msDS-KrbTgtLinkBl`, `serverReference` |
 | AdminSDHolder | `(objectClass=*)` | `nTSecurityDescriptor` |
 | Domain enumeration (partitions) | `(&(objectClass=crossRef)(nCName=*)(nETBIOSName=*))` | `nCName`, `nETBIOSName` |
 | Domain enumeration (SID) | `(objectSid=*)` | `objectSid` |
@@ -161,7 +161,7 @@ The `DirectorySearcher.SecurityMasks` property controls which parts of the secur
 - **Main scan**: `SecurityMasks.Owner | SecurityMasks.Dacl` — retrieves only the owner and DACL
 - **AdminSDHolder**: `SecurityMasks.Dacl` — retrieves only the DACL
 
-This replaces the manual `LDAP_SERVER_SD_FLAGS_OID` control and reduces data transfer by excluding the SACL and primary group.
+This replaces the manual `LDAP_SERVER_SD_FLAGS_OID` control and reduces data transfer by excluding the SACL and the security descriptor's Group SID field (not to be confused with the separate `primaryGroupID` attribute).
 
 ### Timeouts
 
@@ -176,7 +176,7 @@ Only the specific attributes needed are requested via `DirectorySearcher.Propert
 
 ```csharp
 searcher.PropertiesToLoad.AddRange(new string[] {
-    "nTSecurityDescriptor", "objectClass", "objectSID",
+    "nTSecurityDescriptor", "objectClass", "objectSid",
     "adminCount", "msDS-KrbTgtLinkBl", "serverReference"
 });
 ```
@@ -241,7 +241,7 @@ RawSecurityDescriptor sd = new RawSecurityDescriptor(sddlString);
 
 The `RawSecurityDescriptor(string)` constructor accepts SDDL directly. The resulting `.DiscretionaryAcl` provides ACE enumeration through `CommonAce` and `ObjectAce` types in `System.Security.AccessControl`.
 
-**Important**: SDDL domain-relative aliases (e.g., `DA` for Domain Admins, `EA` for Enterprise Admins) resolve to different SIDs in each domain. Since `RawSecurityDescriptor(string)` resolves aliases using only the calling process's security context (i.e., the current domain), schema default SDDL strings must be parsed **once per known domain NC** with manual alias substitution. See Step 4 in Section 9 for the full per-domain expansion mechanism.
+**Important**: SDDL domain-relative aliases (e.g., `DA` for Domain Admins, `DU` for Domain Users) resolve to different SIDs in each domain, while forest-root-only aliases (`EA` for Enterprise Admins, `SA` for Schema Admins) always resolve to the forest root domain's SID. Since `RawSecurityDescriptor(string)` resolves aliases using only the calling process's security context (i.e., the current domain), schema default SDDL strings must be parsed **once per known domain NC** with manual alias substitution. See Step 4 in Section 9 for the full per-domain expansion mechanism.
 
 ### Owner Retrieval
 
@@ -315,8 +315,8 @@ ACEs for the following well-known SIDs are suppressed by default. These are high
 | `S-1-5-9` | Enterprise Domain Controllers |
 | `<domain SID>-512` | Domain Admins (per domain) |
 | `<domain SID>-516` | Domain Controllers (per domain) |
-| `<domain SID>-518` | Schema Admins (per domain) |
-| `<domain SID>-519` | Enterprise Admins (per domain) |
+| `<forest root domain SID>-518` | Schema Admins (forest root domain only) |
+| `<forest root domain SID>-519` | Enterprise Admins (forest root domain only) |
 
 **Note:** Account Operators (`S-1-5-32-548`), Server Operators (`S-1-5-32-549`), Print Operators (`S-1-5-32-550`), and Backup Operators (`S-1-5-32-551`) are **reported by default** and are NOT in the suppressed list. These groups are well-known attack vectors in Active Directory, and suppressing their ACEs by default could give a false sense of security. Security auditors specifically need visibility into what these groups can do.
 
@@ -572,7 +572,7 @@ When `ContainerInherit` is not set, no inheritance scope text is included.
 ### Step 4: Schema ACE Analysis
 
 - For each `ActiveDirectorySchemaClass` with a `DefaultObjectSecurityDescriptor`:
-  - Parse the SDDL string **once per known domain NC** (all domain NCs collected in Step 1). SDDL domain-relative aliases (e.g., `DA` for Domain Admins, `EA` for Enterprise Admins, `PA` for Group Policy Creator Owners) resolve to different SIDs in each domain. Since `RawSecurityDescriptor(string)` resolves aliases using only the calling process's security context (i.e., the current domain), the tool must manually substitute domain-relative SDDL abbreviations with each domain's specific SIDs before parsing. Specifically, for each domain, replace aliases like `DA` → `S-1-5-21-<domainSid>-512`, `DU` → `S-1-5-21-<domainSid>-513`, etc., using the domain SID collected in Step 1, then parse the substituted string via `new RawSecurityDescriptor(expandedSddl)`.
+  - Parse the SDDL string **once per known domain NC** (all domain NCs collected in Step 1). SDDL domain-relative aliases (e.g., `DA` for Domain Admins, `DU` for Domain Users, `PA` for Group Policy Creator Owners) resolve to different SIDs in each domain. Since `RawSecurityDescriptor(string)` resolves aliases using only the calling process's security context (i.e., the current domain), the tool must manually substitute SDDL abbreviations with the appropriate domain's SIDs before parsing. Specifically, for each domain, replace per-domain aliases like `DA` → `S-1-5-21-<domainSid>-512`, `DU` → `S-1-5-21-<domainSid>-513`, etc. Forest-root-only aliases — `EA` (Enterprise Admins, RID 519) and `SA` (Schema Admins, RID 518) — must always resolve to the **forest root domain** SID regardless of which domain is being processed. Parse the substituted string via `new RawSecurityDescriptor(expandedSddl)`.
   - Filter the DACL ACEs through the interest check logic
   - Store remaining ACEs as orphan ACEs in the result set
 
