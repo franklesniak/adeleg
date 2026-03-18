@@ -801,7 +801,7 @@ The XML schema also defines elements for configuring risk classification rules (
     - `riskLevel="..."` — Optional custom risk level override (`Critical`, `High`, `Medium`, `Informational`)
   - **`<remove>`**: Removes a delegation type from the baseline dangerous set. Uses `rights` and `objectType` attributes to identify the entry to remove.
 
-**Placeholder syntax:** Placeholders in SID and DN patterns use curly-brace syntax (`{domainSID}`, `{domainDN}`, `{forestRootDN}`) rather than angle brackets, avoiding the need for XML entity escaping. At runtime, `{domainSID}` and `{domainDN}` are expanded for each known domain, and `{forestRootDN}` is expanded using the forest root domain's DN. This is analogous to how delegation location wildcards (`DC=*`) are expanded (see Location Wildcards above).
+**Placeholder syntax:** Placeholders in SID and DN patterns use curly-brace syntax (`{domainSID}`, `{forestRootDomainSID}`, `{domainDN}`, `{forestRootDN}`) rather than angle brackets, avoiding the need for XML entity escaping. At runtime, `{domainSID}` and `{domainDN}` are expanded for each known domain, `{forestRootDomainSID}` is expanded once using the forest root domain's SID (used for forest-root-only groups such as Schema Admins, Enterprise Admins, and Enterprise Key Admins), and `{forestRootDN}` is expanded using the forest root domain's DN. This is analogous to how delegation location wildcards (`DC=*`) are expanded (see Location Wildcards above).
 
 ### Location Wildcards
 
@@ -1055,7 +1055,7 @@ The tool assumes all naming contexts belong to the same forest. This is the expe
 
 **Decision: Carry forward with explicit confirmation.**
 
-The tool loads the schema dynamically at runtime via `ActiveDirectorySchema.GetCurrentSchema().FindAllClasses()` and `FindAllProperties()` (or `ActiveDirectorySchema.GetSchema(ctx).FindAllClasses()` and `.GetSchema(ctx).FindAllProperties()` when `--server` is specified, as defined in Section 9, Step 2). Custom schema extensions (additional classes and attributes) are fully supported — they appear in the schema enumeration and their GUIDs are loaded into the schema maps used for rights interpretation.
+The tool loads the schema dynamically at runtime via `ActiveDirectorySchema.GetCurrentSchema().FindAllClasses()` and `FindAllProperties()` (or `ActiveDirectorySchema.GetSchema(ctx).FindAllClasses()` and `ActiveDirectorySchema.GetSchema(ctx).FindAllProperties()` when `--server` is specified, as defined in Section 9, Step 2). Custom schema extensions (additional classes and attributes) are fully supported — they appear in the schema enumeration and their GUIDs are loaded into the schema maps used for rights interpretation.
 
 Custom schema attributes referenced in ACE `ObjectType` GUIDs are resolved correctly because the schema maps are built from the live schema, not from a static list.
 
@@ -1215,7 +1215,7 @@ The following resources are classified as Tier 0 by default. Resources are ident
 
 ADeleginator includes `"GPO linked to Tier Zero container"` as a Tier 0 resource but provides no mechanism to resolve which GPOs are linked. The new tool implements this by:
 
-1. For each Tier 0 container identified above (domain root, Domain Controllers OU, Users container), read the `gpLink` attribute via `(string)entry.Properties["gpLink"][0]` (note: `Properties["gpLink"]` returns a `PropertyValueCollection`, so `[0]` indexing and a `string` cast are required; the `DirectoryEntry` should be obtained via `using` to prevent handle leaks).
+1. For each Tier 0 container identified above (domain root, Domain Controllers OU, Users container), read the `gpLink` attribute via `(string)entry.Properties["gpLink"][0]` (note: `Properties["gpLink"]` returns a `PropertyValueCollection`, so a `Count > 0` check must precede `[0]` indexing — `gpLink` is often absent on containers that have no linked GPOs, in which case this step is skipped for that container; a `string` cast is also required; the `DirectoryEntry` should be obtained via `using` to prevent handle leaks).
 2. Parse the `gpLink` value, which is a string of the form `[LDAP://CN={GUID},CN=Policies,CN=System,{domainDN};status]`, extracting each linked GPO's DN.
 3. Add each linked GPO DN to the Tier 0 resource set.
 4. This resolution is performed once during the bootstrap phase (after domain enumeration, before the main scan) and cached for the duration of the scan.
@@ -1312,7 +1312,7 @@ The following delegation types are classified as dangerous by default, organized
 
 The dangerous delegation types in Categories B and E require comparing the `ActiveDirectoryAccessRule.ObjectType` GUID against specific schema attribute GUIDs and control access right GUIDs. These GUIDs are resolved during the schema loading phase (Step 2 of the pipeline described in Section 9):
 
-1. During schema attribute enumeration (via `ActiveDirectorySchema.GetCurrentSchema().FindAllProperties()`, or `.GetSchema(ctx).FindAllProperties()` with `--server` — see Section 9, Step 2), build a `Dictionary<string, Guid>` mapping attribute `Name` (lDAPDisplayName) to `SchemaGuid`. This name-to-GUID map is needed because the dangerous attribute definitions reference attributes by name.
+1. During schema attribute enumeration (via `ActiveDirectorySchema.GetCurrentSchema().FindAllProperties()`, or `ActiveDirectorySchema.GetSchema(ctx).FindAllProperties()` with `--server` — see Section 9, Step 2), build a `Dictionary<string, Guid>` mapping attribute `Name` (lDAPDisplayName) to `SchemaGuid`. This name-to-GUID map is needed because the dangerous attribute definitions reference attributes by name.
 2. Look up each dangerous attribute by name (e.g., `"servicePrincipalName"`, `"msDS-AllowedToActOnBehalfOfOtherIdentity"`) and retrieve its `SchemaGuid`.
 3. Store the resolved dangerous attribute GUIDs in a `Dictionary<Guid, string>` mapping GUID to attack description, for O(1) lookup during the scan.
 4. If a dangerous attribute name is not found in the schema (e.g., `msDS-KeyCredentialLink` may not exist in older schema versions), log a warning to stderr and skip that detection rule.
