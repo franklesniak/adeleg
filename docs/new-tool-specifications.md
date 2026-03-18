@@ -449,7 +449,7 @@ Each resolved SID is mapped to one of four principal type classifications. The m
 | `foreignSecurityPrincipal` | `External` | Represents a principal from a trusted domain |
 | Any other class | `External` | |
 
-**From `SecurityIdentifier.Translate()` resolution:** The `Translate()` method returns an `NTAccount` but does not directly provide a `SID_NAME_USE` equivalent. The principal type is set to `External` by default for `Translate()`-resolved SIDs, unless the SID is subsequently resolved via LDAP (which provides the `objectClass`).
+**From `SecurityIdentifier.Translate()` resolution:** The `Translate()` method returns an `NTAccount` but does not directly provide a `SID_NAME_USE` equivalent. The principal type is set to `External` for `Translate()`-resolved SIDs. Because the cache uses "first write wins" semantics and the resolution steps are sequential (cache → `Translate()` → LDAP), a SID successfully resolved by `Translate()` is cached immediately and the LDAP step is never attempted for that SID — so the `External` type is not subsequently refined. SIDs that are pre-populated during the main scan (from objects with `objectSid`) already have `objectClass`-based types before `Translate()` is ever tried, so they are unaffected.
 
 **Unresolved SIDs:** If resolution fails entirely (cache miss, `Translate()` throws `IdentityNotMappedException`, and LDAP lookup fails), the raw SID string is used as the trustee name with type `External`.
 
@@ -797,11 +797,18 @@ Non-canonical ACL detection uses `CommonAcl.IsCanonical` as the primary detectio
 
 ```csharp
 RawSecurityDescriptor rawSd = new RawSecurityDescriptor(bytes, 0);
+bool isContainer = DetermineIsContainer(mostSpecificObjectClass);
 CommonSecurityDescriptor commonSd = new CommonSecurityDescriptor(
-    false, true, rawSd  // isContainer=false, isDS=true for AD objects
+    isContainer, true, rawSd  // isContainer derived per-object, isDS=true for AD objects
 );
 bool isCanonical = commonSd.DiscretionaryAcl.IsCanonical;
 ```
+
+The `isContainer` parameter must be derived per-object rather than hard-coded. Many AD objects (domains, OUs, objects of class `container`, `builtinDomain`, `organizationalUnit`, etc.) are containers, and `CommonAcl.IsCanonical` may evaluate inheritance-related canonical ordering rules differently for containers vs. leaf objects. To determine `isContainer`:
+
+1. Retrieve the most specific `objectClass` value for the object (already available from the scan's `PropertiesToLoad`).
+2. Look up the corresponding `ActiveDirectorySchemaClass` and check whether `PossibleInferiors.Count > 0`. If the class can contain child objects, it is a container.
+3. Cache the `isContainer` determination per class name to avoid repeated schema lookups.
 
 If `IsCanonical` returns `false`, the tool iterates the ACEs manually to identify the specific ordering violation for the warning message. A non-canonical ACL is detected when:
 
