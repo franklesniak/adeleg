@@ -1,6 +1,6 @@
 # Active Directory Delegation Analysis Tool — Technical Specification
 
-> **Provenance:** This specification is derived from the original ADeleg tool's behavioral specification (`specifications-reference.md`) and revised per the criticism document (`specifications-criticism.md`, Sections 1–16). Sections 13–20 integrate the usability, security, assumption, and risk-classification guidance from the criticism document's Sections 13–16, and incorporate the functional requirements of the ADeleginator companion tool (`ADeleginator-Spec.md`) as native features. All operations are described in terms of .NET Framework 2.0 managed APIs. This is a standalone document — no other specification documents are required to understand the tool's behavior for the areas covered herein.
+> **Provenance:** This specification is derived from the original ADeleg tool's behavioral specification (`specifications-reference.md`) and revised per the criticism document (`specifications-criticism.md`). Sections 1–12 of this document address Sections 1–12 of the criticism. Sections 13–20 integrate the usability, security, assumption, and risk-classification guidance from Sections 13–16 of the criticism, and incorporate the functional requirements of the ADeleginator companion tool (`ADeleginator-Spec.md`) as native features. All operations are described in terms of .NET Framework 2.0 managed APIs. This is a standalone document — no other specification documents are required to understand the tool's behavior for the areas covered herein.
 
 ---
 
@@ -1112,7 +1112,7 @@ The following SIDs are recognized as unsafe trustees by default. SID-based match
 
 | # | SID | Identity | Rationale |
 |---|---|---|---|
-| 1 | `S-1-1-0` | Everyone | Includes all authenticated users (note: since Windows Server 2003, `Everyone` does **not** include `Anonymous Logon` by default) |
+| 1 | `S-1-1-0` | Everyone | Universal identity that includes all users; since Windows Server 2003, `Everyone` does **not** include `Anonymous Logon` by default (controlled by the group policy "Network access: Let Everyone permissions apply to anonymous users") |
 | 2 | `S-1-5-11` | Authenticated Users | Includes every authenticated identity in the forest |
 | 3 | `S-1-5-7` | Anonymous Logon | Unauthenticated access; dangerous if delegations are granted to it |
 | 4 | `S-1-5-32-554` | Pre-Windows 2000 Compatible Access | Often includes `Authenticated Users` as a member; delegations to this group are effectively delegations to all users |
@@ -1231,7 +1231,9 @@ The following delegation types are classified as dangerous by default, organized
 | 4 | `GenericAll` (value `0xF01FF`) present in access mask | *(not detected by ADeleginator)* | Full control — grants every possible permission on the object |
 | 5 | `GenericWrite` (value `0x20028`) present in access mask | *(not detected by ADeleginator)* | `ReadControl` + `WriteProperty` + `Self` — very broad write access |
 
-**Note on GenericAll and GenericWrite:** The `System.DirectoryServices.ActiveDirectoryRights` enum defines `GenericAll` (value `983551` / `0xF01FF`) which combines all standard and specific rights into full control, and `GenericWrite` (value `131112` / `0x20028`) which decomposes into `ReadControl` (`0x20000`) | `WriteProperty` (`0x20`) | `Self` (`0x8`). The `ReadControl` component is a read-only right, so the dangerous components of `GenericWrite` are `WriteProperty` and `Self`. Active Directory maps generic access bits to object-type-specific rights when storing ACEs, so the `ActiveDirectoryRights` enum values reflect the mapped (resolved) specific rights. Checking `((int)rule.ActiveDirectoryRights & 0xF01FF) == 0xF01FF` for GenericAll and `((int)rule.ActiveDirectoryRights & 0x20028) == 0x20028` for GenericWrite is correct.
+**Note on GenericAll and GenericWrite:** The `System.DirectoryServices.ActiveDirectoryRights` enum defines `GenericAll` (value `983551` / `0xF01FF`) which combines all standard and specific rights into full control, and `GenericWrite` (value `131112` / `0x20028`) which decomposes into `ReadControl` (`0x20000`) | `WriteProperty` (`0x20`) | `Self` (`0x8`). The `ReadControl` component is a read-only right, so the dangerous components of `GenericWrite` are `WriteProperty` and `Self`.
+
+**Important distinction from standard Windows GENERIC_* bits:** The values `0xF01FF` and `0x20028` in the `ActiveDirectoryRights` enum are **not** the standard Windows generic access mask bits (`GENERIC_ALL = 0x10000000`, `GENERIC_WRITE = 0x40000000`). Active Directory maps generic access bits to object-type-specific rights when storing ACEs. The `ActiveDirectoryRights` enum values reflect the **mapped (resolved) specific rights**, not the raw generic bits. When an ACE is read from AD via `ActiveDirectoryAccessRule.ActiveDirectoryRights`, the property returns the access mask as stored in the ACE — which contains the mapped values (`0xF01FF` for full control, `0x20028` for generic write), not the pre-mapping generic bits. Consequently, checking `((int)rule.ActiveDirectoryRights & 0xF01FF) == 0xF01FF` for GenericAll and `((int)rule.ActiveDirectoryRights & 0x20028) == 0x20028` for GenericWrite is correct — these bit patterns will be present in stored ACEs that were created with full-control or generic-write access.
 
 **Category B — Dangerous Write Delegations (dangerous when the object type GUID targets a sensitive attribute or is empty):**
 
