@@ -622,7 +622,7 @@ When `ContainerInherit` is not set, no inheritance scope text is included.
 
 - Iterate over all results, sorted deterministically (see Section 10)
 - For each entry, write CSV records for: errors/warnings, owner, DACL protection, non-canonical ACL, deleted trustees, orphan ACEs, and matched delegations
-- Report final summary: `Console.Error.WriteLine(String.Format("[Done] {0} objects, {1} findings, elapsed: {2}", total, findings, stopwatch.Elapsed))`
+- Report final summary to stderr (and log file if `--log` is active) using the format defined in Section 13.3 — `[i]` prefix, object/ACE/SD counts, and elapsed time formatted as `hh:mm:ss` (or `mm:ss` for scans under one hour)
 
 ---
 
@@ -1050,12 +1050,14 @@ The tool should log the following execution metadata to stderr (and to the log f
 
 ```
 [i] Tool version: {version}
-[i] Start time: {ISO 8601 timestamp}
+[i] Start time: {UTC timestamp}
 [i] Running as: {DOMAIN\username} ({SID})
 [i] Target: {server or "auto-discovered DC: hostname"}
 [i] Naming contexts: {comma-separated list of NCs}
-[i] End time: {ISO 8601 timestamp}
+[i] End time: {UTC timestamp}
 ```
+
+Where `{UTC timestamp}` is `DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", System.Globalization.CultureInfo.InvariantCulture)` — the same culture-independent UTC format used by the logging helper (Section 13.2).
 
 This provides a basic audit trail of tool execution for compliance purposes. The LDAP queries themselves may also be logged by the domain controller's diagnostic logging.
 
@@ -1245,7 +1247,7 @@ The following resources are classified as Tier 0 by default. Resources are ident
 
 ADeleginator includes `"GPO linked to Tier Zero container"` as a Tier 0 resource but provides no mechanism to resolve which GPOs are linked. The new tool implements this by:
 
-1. For each Tier 0 container identified above (domain root, Domain Controllers OU, Users container), read the `gpLink` attribute via `(string)entry.Properties["gpLink"][0]` (note: `Properties["gpLink"]` returns a `PropertyValueCollection`, so a `Count > 0` check must precede `[0]` indexing — `gpLink` is often absent on containers that have no linked GPOs, in which case this step is skipped for that container; a `string` cast is also required; the `DirectoryEntry` should be obtained via `using` to prevent handle leaks).
+1. For each Tier 0 container that supports GPO linking (domain root and Domain Controllers OU — note: `CN=Users` is a container, not an OU, and is not a valid GPO link target in Active Directory), read the `gpLink` attribute via `(string)entry.Properties["gpLink"][0]` (note: `Properties["gpLink"]` returns a `PropertyValueCollection`, so a `Count > 0` check must precede `[0]` indexing — `gpLink` is often absent on containers that have no linked GPOs, in which case this step is skipped for that container; a `string` cast is also required; the `DirectoryEntry` should be obtained via `using` to prevent handle leaks).
 2. Parse the `gpLink` value, which is a string of the form `[LDAP://CN={GUID},CN=Policies,CN=System,{domainDN};status]`, extracting each linked GPO's DN.
 3. Add each linked GPO DN to the Tier 0 resource set.
 4. This resolution is performed once during the bootstrap phase (after domain enumeration, before the main scan) and cached for the duration of the scan.
