@@ -628,9 +628,9 @@ When `ContainerInherit` is not set, no inheritance scope text is included.
 
 ## 10. CSV Export Structure
 
-### Triggering CSV Export
+### CSV Output Destination
 
-CSV export is triggered by the `--csv <path>` command-line argument. If the path is `-`, output goes to stdout. Otherwise, a file is created (or truncated if it exists). If neither `--csv` nor `--risk-csv` (see Section 20.2) is specified, the tool writes CSV to stdout by default (equivalent to `--csv -`). This ensures the tool always produces usable output, even when run without explicit output arguments.
+The `--csv <path>` command-line argument selects the destination for CSV output. If the path is `-`, output goes to stdout. Otherwise, a file is created (or truncated if it exists). If neither `--csv` nor `--risk-csv` (see Section 20.2) is specified, the tool writes CSV to stdout by default (equivalent to `--csv -`). This ensures the tool always produces usable output, even when run without explicit output arguments.
 
 ### CSV Header Row
 
@@ -1011,7 +1011,7 @@ The tool should support a `--verbose` flag (may be specified multiple times for 
 
 ### 13.8. Output Path Defaults
 
-CSV export is triggered by the `--csv` argument (see Section 10). If `--csv <path>` is specified, write to the given file path. If `--csv -` is specified, write to stdout. If neither `--csv` nor `--risk-csv` is specified, the tool writes CSV to stdout by default (equivalent to `--csv -`).
+The `--csv` argument selects the CSV output destination (see Section 10). If `--csv <path>` is specified, write to the given file path. If `--csv -` is specified, write to stdout. If neither `--csv` nor `--risk-csv` is specified, the tool writes CSV to stdout by default (equivalent to `--csv -`).
 
 ---
 
@@ -1024,8 +1024,8 @@ This section applies the security improvements prescribed in Section 14 of the c
 As detailed in Section 13.5, cleartext passwords on the command line are not supported. The tool provides three credential modes:
 
 1. **Windows SSO** (default, no credentials on command line).
-2. **Interactive password entry** (`--password *`), which reads characters without echo via `Console.ReadKey(true)`.
-3. **Environment variable** (`--password-env <VARIABLE_NAME>`), which reads from the named environment variable.
+2. **Interactive password entry** (`--username <user> --password *`), which reads characters without echo via `Console.ReadKey(true)`.
+3. **Environment variable** (`--username <user> --password-env <VARIABLE_NAME>`), which reads from the named environment variable.
 
 For interactive password entry, the tool should:
 
@@ -1489,13 +1489,13 @@ This per-row annotation enables the report consumer to immediately identify whic
 After the scan completes, the tool prints a risk summary to stderr:
 
 ```
-[i] Risk summary: Critical: {n}, High: {n}, Medium: {n}, Informational: {n}
+[i] Risk summary: Critical: {criticalCount}, High: {highCount}, Medium: {mediumCount}, Informational: {informationalCount}
 ```
 
 If any `Critical` or `High` findings exist, an additional alert is printed:
 
 ```
-[!] {n} Critical and {n} High risk delegations found. Review the output for details.
+[!] {criticalCount} Critical and {highCount} High risk delegations found. Review the output for details.
 ```
 
 If no findings of any risk level exist:
