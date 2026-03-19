@@ -985,7 +985,7 @@ The tool supports the following authentication modes, ordered by preference:
 |---|---|---|---|
 | 1 | **Windows SSO (SSPI/Negotiate)** | *(no credential flags)* | `new DirectoryEntry(path)` — uses process identity automatically. This is the recommended default. |
 | 2 | **Interactive password entry** | `--username <user> --password *` | Read password character-by-character via `Console.ReadKey(true)` in a loop, building a `string`. Pass to `new DirectoryEntry(path, username, password, AuthenticationTypes.Secure)`. |
-| 3 | **Environment variable** | `--username <user> --password-env ADELEG_PASSWORD` | Read password from `Environment.GetEnvironmentVariable("ADELEG_PASSWORD")`. Less visible than command-line arguments. |
+| 3 | **Environment variable** | `--username <user> --password-env <VARIABLE_NAME>` | Read password from `Environment.GetEnvironmentVariable(variableName)`, where `variableName` is the value passed to `--password-env`. Less visible than command-line arguments. Example: `--password-env ADELEG_PASSWORD` reads from the `ADELEG_PASSWORD` environment variable. |
 
 **Deprecation of cleartext command-line password:** The `--password <value>` form (where the password is supplied directly on the command line) is **not supported**. Passwords supplied on the command line are visible via process listings (`tasklist /v`, `Get-Process`, `/proc/*/cmdline`), creating a credential exposure risk. If automation requires non-interactive credential supply, use the `--password-env` option.
 
@@ -1040,7 +1040,7 @@ For interactive password entry, the tool should:
 
 When using `System.DirectoryServices` with `DirectoryEntry`, LDAPS certificate validation is handled automatically by the underlying Windows LDAP subsystem using the machine's trusted CA certificate store. No custom certificate validation code, `ServicePointManager` callbacks, or P/Invoke hooks are needed.
 
-If `AuthenticationTypes.Secure` is used (the recommended default), the connection uses SASL/Kerberos signing and encryption without requiring LDAPS at all. The tool relies on this default secure behavior and does not specify low-level certificate validation details.
+If `AuthenticationTypes.Secure` is used (the recommended default), the connection uses SSPI-negotiated authentication (typically Kerberos or NTLM). `Secure` guarantees authenticated binding but does **not** guarantee encryption or integrity protection — signing and sealing are negotiated separately and depend on the domain controller's and client's policies. In most Active Directory environments, Kerberos with signing and sealing is the negotiated result, but the tool should not assume this. If encryption of LDAP traffic is a hard requirement, use LDAPS (`AuthenticationTypes.Secure | AuthenticationTypes.SecureSocketsLayer`) to ensure TLS-level transport encryption regardless of SSPI negotiation outcomes.
 
 If an explicit LDAPS connection is needed (e.g., `"LDAP://server:636"` with `AuthenticationTypes.Secure | AuthenticationTypes.SecureSocketsLayer`), the Windows trust store evaluation applies automatically. Both flags must be combined: `Secure` preserves SSPI/Kerberos/NTLM authentication, while `SecureSocketsLayer` enables TLS transport. Using `SecureSocketsLayer` alone may fall back to simple bind (see Section 2, "LDAPS and Encrypted Transport").
 
@@ -1266,7 +1266,7 @@ During the main scan, each object is checked against the Tier 0 resource set usi
 
 1. **SID-based check:** If the object has an `objectSid` attribute, parse it as a `SecurityIdentifier` and look up its `Value` in the Tier 0 SID `Dictionary<string, bool>`.
 2. **DN-based check:** Look up the object's `distinguishedName` in the Tier 0 DN `Dictionary<string, bool>` (constructed with `StringComparer.OrdinalIgnoreCase`).
-3. **Object-class-based check:** For objects matching Tier 0 object class rules (e.g., `trustedDomain`, `pKICertificateTemplate`, `pKIEnrollmentService`), check the object's most-specific `objectClass` value against the Tier 0 object class set.
+3. **Object-class-based check:** For objects matching Tier 0 object class rules, check the object's most-specific `objectClass` value against the Tier 0 object class set. Some object-class rules are **container-scoped** — that is, the object class match is only valid when the object resides within (or directly under) a specific container DN. For example, `pKICertificateTemplate` objects are Tier 0 only when located under `CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,{forestRootDN}`, and `pKIEnrollmentService` objects only when under `CN=Enrollment Services,CN=Public Key Services,CN=Services,CN=Configuration,{forestRootDN}`. The container scope is evaluated by checking whether the object's `distinguishedName` ends with the container DN (case-insensitive comparison). Object-class rules without a container qualifier (e.g., `trustedDomain`) apply globally regardless of location.
 
 If any check matches, the object is classified as a Tier 0 resource for risk classification purposes.
 
@@ -1510,8 +1510,8 @@ The tool supports filtered risk output via the following CLI options:
 
 | Option | Description |
 |---|---|
-| `--risk-csv <path>` | Write a filtered CSV containing only rows with a non-empty `Risk Level` column (i.e., Critical, High, Medium, or Informational findings). Uses the same schema as the main output (including the `Risk Level` and `Current User Can Exploit` columns). |
-| `--risk-level <level>` | Minimum risk level to include in the `--risk-csv` output. One of: `Critical`, `High`, `Medium`, `Informational`. Default: `Medium` (includes Critical, High, and Medium). |
+| `--risk-csv <path>` | Write a filtered CSV containing only rows whose `Risk Level` column meets the `--risk-level` threshold (default: Medium, i.e., Critical, High, and Medium findings). Uses the same schema as the main output (including the `Risk Level` and `Current User Can Exploit` columns). |
+| `--risk-level <level>` | Minimum risk level to include in the `--risk-csv` output. One of: `Critical`, `High`, `Medium`, `Informational`. Default: `Medium` (includes Critical, High, and Medium). Has no effect unless `--risk-csv` is also specified. |
 
 #### Filtered Report Behavior
 
