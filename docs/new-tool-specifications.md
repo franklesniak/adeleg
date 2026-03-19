@@ -267,7 +267,7 @@ SecurityIdentifier owner = (SecurityIdentifier)security.GetOwner(typeof(Security
 
 ### Callback ACE Handling
 
-**Documented limitation:** Callback ACE types (`ACCESS_ALLOWED_CALLBACK_ACE_TYPE`, `ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE`, etc.) are returned by `GetAccessRules()` as `ActiveDirectoryAccessRule` objects, but the conditional expression data embedded in the ACE is not exposed by the .NET Framework. Callback ACEs are reported as-is, treated identically to their non-callback counterparts, without evaluation of their conditional expressions. The reported permissions may not reflect the effective conditional access. This matches the behavior of the original tool.
+**Documented limitation:** Callback ACE types (`ACCESS_ALLOWED_CALLBACK_ACE_TYPE`, `ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE`, etc.) are returned by `GetAccessRules()` as `ActiveDirectoryAccessRule` objects, but the conditional expression data embedded in the ACE is not exposed by the .NET Framework. Callback ACEs are reported as-is, treated identically to their non-callback counterparts, without evaluation of their conditional expressions. The reported permissions may not reflect the effective conditional access.
 
 ### ACE Type Coverage
 
@@ -936,8 +936,6 @@ The tool assumes the multi-valued `objectClass` attribute is ordered with the mo
 
 ## 13. Usability and Operational Concerns
 
-This section applies the usability improvements prescribed in Section 13 of the criticism document.
-
 ### 13.1. Validation Mode
 
 The tool should support a `--validate` flag that checks configuration and connectivity without performing the full scan. When `--validate` is specified, the tool:
@@ -1015,11 +1013,48 @@ The tool should support a `--verbose` flag (may be specified multiple times for 
 
 The `--csv` argument selects the CSV output destination (see Section 10). If `--csv <path>` is specified, write to the given file path. If `--csv -` is specified, write to stdout. If neither `--csv` nor `--risk-csv` is specified, the tool writes CSV to stdout by default (equivalent to `--csv -`).
 
+### 13.9. Error Handling and Exit Codes
+
+#### Exit Codes
+
+The tool uses differentiated exit codes to support scripting and automation:
+
+| Exit Code | Meaning |
+|---|---|
+| 0 | Success — the requested operation completed successfully (scan, validation, or help output) |
+| 1 | General or unexpected error |
+| 2 | Connection or authentication failure (e.g., `DirectoryServicesCOMException` during bind, or `ActiveDirectoryObjectNotFoundException` from `Domain.GetCurrentDomain()` on a non-domain-joined machine) |
+| 3 | Input file parsing error — delegation, template, or risk configuration XML files failed XSD validation or XML parsing (`XmlException`, `XmlSchemaValidationException`, `InvalidOperationException` from `XmlSerializer`) |
+| 4 | Output file error — cannot create or write to the specified CSV or log file (`IOException`, `UnauthorizedAccessException`) |
+
+Exit codes are set via `Environment.ExitCode` or the return value from `Main()`.
+
+#### Search-Level Error Handling
+
+If a search-level LDAP error occurs during the main subtree scan of a naming context (e.g., the server drops the connection, returns a size limit exceeded error, or the `SearchResultCollection` enumerator throws `DirectoryServicesCOMException`):
+
+- **The tool does NOT abort the entire run.** The error is logged to stderr (and to the log file if `--log` is active), the affected naming context is marked as failed, and scanning continues with the remaining naming contexts.
+- At the end of the scan, the tool reports which naming contexts were successfully scanned and which failed:
+  ```
+  [!] Failed to scan naming context: {ncDN} — {errorMessage}
+  ```
+- If any naming contexts failed, the exit code is 1 (general error), even if other naming contexts succeeded. The CSV output includes results from all successfully scanned naming contexts.
+
+#### Per-Object Error Handling
+
+Per-object errors — such as failures to parse a security descriptor, missing or unreadable `objectClass` attributes, and unparseable schema `defaultSecurityDescriptor` SDDL strings — are recorded per-location and reported as `Warning` rows in the CSV output if `--show-warning-unreadable` is enabled. The scan continues for subsequent objects. By default, these errors are counted and summarized in the end-of-scan summary (see Section 13.3).
+
+#### Connection and Authentication Errors
+
+If the initial connection fails (e.g., `Domain.GetCurrentDomain()` throws `ActiveDirectoryObjectNotFoundException` on a non-domain-joined machine, or `DirectoryEntry` construction with `--server` fails), the tool emits a descriptive error to stderr and exits with code 2.
+
+### 13.10. Format Versioning
+
+The CSV output schema (column names, column count, and column semantics) and the XML configuration schema (delegation, template, and risk configuration elements) are defined by this specification. Changes to either schema that alter column count, column names, column ordering, or XML element/attribute structure constitute a breaking change and should be accompanied by a version increment in the tool's version string (reported in the audit trail per Section 14.3). Consumers of the CSV output should parse by header name rather than by column position to maximize forward compatibility.
+
 ---
 
 ## 14. Security Considerations
-
-This section applies the security improvements prescribed in Section 14 of the criticism document.
 
 ### 14.1. Credential Protection
 
@@ -1073,7 +1108,7 @@ The specification acknowledges that the output CSV may contain sensitive informa
 
 ## 15. Assumptions and Limitations
 
-This section documents the tool's assumptions, applying the re-evaluation prescribed in Section 15 of the criticism document. Each assumption from the criticism is either carried forward with documentation, modified, or replaced.
+This section documents the tool's assumptions and known limitations. Each assumption is either carried forward with documentation, modified, or replaced relative to the original design.
 
 ### 15.1. Single Forest Scope
 
@@ -1140,7 +1175,7 @@ The tool targets .NET Framework 2.0 for the following reasons:
 
 ## 16. Risk Classification and Insecure Delegation Detection
 
-> **Provenance:** This section integrates the functionality of the ADeleginator tool (documented in `ADeleginator-Spec.md`) directly into the new tool, applying all corrections and improvements prescribed in Section 16 of the criticism document. The new tool performs all delegation enumeration and risk classification natively — it does not depend on or invoke ADeleg or ADeleginator externally.
+> **Provenance:** This section integrates the functionality of the ADeleginator companion tool directly into the new tool. The new tool performs all delegation enumeration and risk classification natively — it does not depend on or invoke ADeleg or ADeleginator externally.
 
 ### 16.1. Overview: Integrated Risk Classification
 
@@ -1461,7 +1496,7 @@ At startup (before the main scan), the tool:
    ```
    Here, `{n}` is the total count of SIDs returned by `WindowsIdentity.Groups` and `{m}` is `{n}` minus the count of those group SIDs that are present in the Tier 0 SID Dictionary (i.e., `{m}` counts the group SIDs that are **not** in the Tier 0 set).
 
-**Rationale for `WindowsIdentity.Groups` over `tokenGroups` via LDAP:** ADeleginator uses the `memberOf` attribute via an LDAP query, which only returns direct group memberships and misses nested/transitive groups. The criticism document prescribes `tokenGroups` via `DirectoryEntry.RefreshCache()`, but `WindowsIdentity.Groups` provides the same transitive group resolution without requiring an LDAP query. This avoids `--server` targeting concerns (since it reads from the local access token, not from a directory server) and is the idiomatic .NET Framework 2.0 approach. The `Groups` property returns `IdentityReferenceCollection` containing `SecurityIdentifier` objects, which can be iterated directly.
+**Rationale for `WindowsIdentity.Groups` over `tokenGroups` via LDAP:** ADeleginator uses the `memberOf` attribute via an LDAP query, which only returns direct group memberships and misses nested/transitive groups. An alternative approach would use the `tokenGroups` constructed attribute via `DirectoryEntry.RefreshCache()`, but `WindowsIdentity.Groups` provides the same transitive group resolution without requiring an LDAP query. This avoids `--server` targeting concerns (since it reads from the local access token, not from a directory server) and is the idiomatic .NET Framework 2.0 approach. The `Groups` property returns `IdentityReferenceCollection` containing `SecurityIdentifier` objects, which can be iterated directly.
 
 **Limitation:** `WindowsIdentity.GetCurrent().Groups` reflects the group memberships in the current process's access token, which is populated at logon time. If the operator's group memberships have changed since logon (e.g., groups added or removed), the token may be stale. Additionally, when the tool is run with explicit credentials (`--username`) targeting a different domain, the `Current User Can Exploit` column reflects the local process identity's groups, not the explicit credential's groups. This is an acceptable trade-off: the `Current User Can Exploit` column is an advisory annotation (not a security control), and the primary risk classification (`Risk Level` column) is unaffected since it uses the policy-based unsafe trustee set.
 
