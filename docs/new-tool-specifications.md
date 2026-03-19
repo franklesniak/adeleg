@@ -1021,7 +1021,7 @@ The tool uses differentiated exit codes to support scripting and automation:
 
 | Exit Code | Meaning |
 |---|---|
-| 0 | Success — scan completed and output was written (findings may or may not exist) |
+| 0 | Success — the requested operation completed successfully (scan, validation, or help output) |
 | 1 | General or unexpected error |
 | 2 | Connection or authentication failure (e.g., `DirectoryServicesCOMException` during bind, or `ActiveDirectoryObjectNotFoundException` from `Domain.GetCurrentDomain()` on a non-domain-joined machine) |
 | 3 | Input file parsing error — delegation, template, or risk configuration XML files failed XSD validation or XML parsing (`XmlException`, `XmlSchemaValidationException`, `InvalidOperationException` from `XmlSerializer`) |
@@ -1108,7 +1108,7 @@ The specification acknowledges that the output CSV may contain sensitive informa
 
 ## 15. Assumptions and Limitations
 
-This section documents the tool's assumptions and known limitations. Each assumption is either carried forward with documentation, modified, or replaced from the original design.
+This section documents the tool's assumptions and known limitations. Each assumption is either carried forward with documentation, modified, or replaced relative to the original design.
 
 ### 15.1. Single Forest Scope
 
