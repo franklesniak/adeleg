@@ -815,11 +815,13 @@ The XML schema defines elements for configuring risk classification rules (refer
   - **`<remove sid="...">`**: Removes a SID from the baseline unsafe trustee set. Uses the same SID/pattern syntax as `<add>`.
 
 - **`<tier0Resources>`**: Container for Tier 0 resource definitions. Contains `<add>` and `<remove>` child elements.
-  - **`<add>`**: Adds a resource to the Tier 0 set. Supports the following attributes (at least one required):
+  - **`<add>`**: Adds a resource to the Tier 0 set. Supports the following attributes (at least one of `sid`, `dn`, or `objectClass` is required):
     - `sid="..."` — Match by SID or SID pattern (e.g., `{domainSID}-500`)
     - `dn="..."` — Match by DN pattern (e.g., `CN=AdminSDHolder,CN=System,{domainDN}`)
     - `objectClass="..."` — Match by object class (e.g., `trustedDomain`)
     - `tier="..."` — Optional sub-tier label (e.g., `Tier0-Critical`, `Tier0-High`; defaults to `Tier0`)
+
+    **Note:** XSD 1.0 (used by `XmlReader` schema validation on .NET Framework 2.0) cannot express the "at least one of `sid`/`dn`/`objectClass` must be present" constraint. In the XSD, all three attributes are declared `use="optional"`. The tool enforces this requirement via **runtime validation** after XSD validation: if an `<add>` element has none of `sid`, `dn`, or `objectClass`, the tool emits a clear error to stderr and exits with a nonzero code.
   - **`<remove>`**: Removes a resource from the baseline Tier 0 set. Uses the same attribute syntax as `<add>`.
 
 - **`<dangerousDelegations>`**: Container for dangerous delegation type definitions. Contains `<add>` and `<remove>` child elements.
@@ -1247,7 +1249,7 @@ The following resources are classified as Tier 0 by default. Resources are ident
 
 ADeleginator includes `"GPO linked to Tier Zero container"` as a Tier 0 resource but provides no mechanism to resolve which GPOs are linked. The new tool implements this by:
 
-1. For each Tier 0 container that supports GPO linking (domain root and Domain Controllers OU — note: `CN=Users` is a container, not an OU, and is not a valid GPO link target in Active Directory), read the `gpLink` attribute via `(string)entry.Properties["gpLink"][0]` (note: `Properties["gpLink"]` returns a `PropertyValueCollection`, so a `Count > 0` check must precede `[0]` indexing — `gpLink` is often absent on containers that have no linked GPOs, in which case this step is skipped for that container; a `string` cast is also required; the `DirectoryEntry` should be obtained via `using` to prevent handle leaks).
+1. For each Tier 0 DN entry that is a valid GPO link target — i.e., domains, OUs, or sites (note: `CN=Users` is a container, not an OU, and is **not** a valid GPO link target in Active Directory) — read the `gpLink` attribute via `(string)entry.Properties["gpLink"][0]` (note: `Properties["gpLink"]` returns a `PropertyValueCollection`, so a `Count > 0` check must precede `[0]` indexing — `gpLink` is often absent on containers that have no linked GPOs, in which case this step is skipped for that container; a `string` cast is also required; the `DirectoryEntry` should be obtained via `using` to prevent handle leaks). This includes the domain root and Domain Controllers OU (which are always in the baseline Tier 0 set) as well as any custom Tier 0 OUs added via `<tier0Resources>` configuration (Section 16.4.3).
 2. Parse the `gpLink` value, which is a string of the form `[LDAP://CN={GUID},CN=Policies,CN=System,{domainDN};status]`, extracting each linked GPO's DN.
 3. Add each linked GPO DN to the Tier 0 resource set.
 4. This resolution is performed once during the bootstrap phase (after domain enumeration, before the main scan) and cached for the duration of the scan.
@@ -1457,6 +1459,7 @@ At startup (before the main scan), the tool:
    ```
    [i] Running as: DOMAIN\username (S-1-5-21-...), member of {n} groups ({m} non-Tier-0)
    ```
+   Here, `{n}` is the total count of SIDs returned by `WindowsIdentity.Groups`, and `{m}` is the number of those group SIDs that are **not** present in the Tier 0 SID set (i.e., `{m} = {n} - count of group SIDs found in the Tier 0 SID Dictionary`).
 
 **Rationale for `WindowsIdentity.Groups` over `tokenGroups` via LDAP:** ADeleginator uses the `memberOf` attribute via an LDAP query, which only returns direct group memberships and misses nested/transitive groups. The criticism document prescribes `tokenGroups` via `DirectoryEntry.RefreshCache()`, but `WindowsIdentity.Groups` provides the same transitive group resolution without requiring an LDAP query. This avoids `--server` targeting concerns (since it reads from the local access token, not from a directory server) and is the idiomatic .NET Framework 2.0 approach. The `Groups` property returns `IdentityReferenceCollection` containing `SecurityIdentifier` objects, which can be iterated directly.
 
@@ -1520,7 +1523,7 @@ The tool supports filtered risk output via the following CLI options:
 - If both `--csv` and `--risk-csv` are specified, the main unfiltered CSV and the filtered risk CSV are both generated from the same scan — no additional AD queries are needed.
 - If `--risk-csv` is specified without `--csv`, only the filtered risk CSV is generated. The main unfiltered CSV is **not** written to stdout. (The default CSV-to-stdout behavior described in Section 13.8 applies only when **neither** `--csv` **nor** `--risk-csv` is specified.)
 - If `--csv` is specified without `--risk-csv`, only the main unfiltered CSV is generated.
-- The filtered report includes a header row and uses the same RFC 4180 encoding as the main CSV (see Section 10).
+- The filtered report includes a header row and uses the same RFC 4180 formatting and UTF-8 (no BOM) encoding as the main CSV (see Section 10).
 - If no findings meet the risk level threshold, the filtered report contains only the header row (an empty result is still a valid CSV file). This differs from ADeleginator, which does not create the file if no findings exist — always creating the file simplifies downstream tooling.
 - The file is written using `StreamWriter` with `new UTF8Encoding(false)` (UTF-8 without BOM).
 
@@ -1538,10 +1541,10 @@ The tool supports filtered risk output via the following CLI options:
 At verbosity level 1 or higher (`--verbose`), as each naming context completes, the tool reports risk findings for that NC:
 
 ```
-[i] {ncDN}: {n} objects scanned, {critical} Critical, {high} High, {medium} Medium risk findings
+[i] {ncDN}: {n} objects scanned, {critical} Critical, {high} High, {medium} Medium, {informational} Informational risk findings
 ```
 
-This integrates with the progress reporting described in Section 9 and is gated by the verbosity level defined in Section 13.7.
+This includes all four risk levels for consistency with the end-of-scan risk summary (Section 20.1). The message integrates with the progress reporting described in Section 9 and is gated by the verbosity level defined in Section 13.7.
 
 ### 20.4. Improvements Over ADeleginator — Summary of Corrections
 
