@@ -1130,7 +1130,7 @@ The tool targets .NET Framework 2.0 for the following reasons:
 |---|---|
 | No LINQ | Use explicit loops and `Dictionary`/`List` operations |
 | No `HashSet<T>` | Use `Dictionary<string, bool>` with `ContainsKey()` (see Section 20.5) |
-| No modern TLS defaults | Rely on `AuthenticationTypes.Secure` for SSPI-negotiated authentication as the default (signing/sealing are typically negotiated but depend on DC/client policies; use LDAPS via `Secure \| SecureSocketsLayer` when guaranteed transport encryption is required) |
+| No modern TLS defaults | Rely on `AuthenticationTypes.Secure` for SSPI-negotiated authentication as the default (signing/sealing are typically negotiated but depend on DC/client policies; use LDAPS via `AuthenticationTypes.Secure` &#124; `AuthenticationTypes.SecureSocketsLayer` when guaranteed transport encryption is required) |
 | No `async`/`await` | The tool is single-threaded by design; async is not needed |
 | No `SecureString` in `DirectoryEntry` | `DirectoryEntry` accepts only `string` for passwords regardless of framework version |
 
