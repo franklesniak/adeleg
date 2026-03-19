@@ -1459,7 +1459,7 @@ At startup (before the main scan), the tool:
    ```
    [i] Running as: DOMAIN\username (S-1-5-21-...), member of {n} groups ({m} non-Tier-0)
    ```
-   Here, `{n}` is the total count of SIDs returned by `WindowsIdentity.Groups`, and `{m}` is the number of those group SIDs that are **not** present in the Tier 0 SID set (i.e., `{m} = {n} - count of group SIDs found in the Tier 0 SID Dictionary`).
+   Here, `{n}` is the total count of SIDs returned by `WindowsIdentity.Groups` and `{m}` is `{n}` minus the count of those group SIDs that are present in the Tier 0 SID Dictionary (i.e., `{m}` counts the group SIDs that are **not** in the Tier 0 set).
 
 **Rationale for `WindowsIdentity.Groups` over `tokenGroups` via LDAP:** ADeleginator uses the `memberOf` attribute via an LDAP query, which only returns direct group memberships and misses nested/transitive groups. The criticism document prescribes `tokenGroups` via `DirectoryEntry.RefreshCache()`, but `WindowsIdentity.Groups` provides the same transitive group resolution without requiring an LDAP query. This avoids `--server` targeting concerns (since it reads from the local access token, not from a directory server) and is the idiomatic .NET Framework 2.0 approach. The `Groups` property returns `IdentityReferenceCollection` containing `SecurityIdentifier` objects, which can be iterated directly.
 
@@ -1541,10 +1541,10 @@ The tool supports filtered risk output via the following CLI options:
 At verbosity level 1 or higher (`--verbose`), as each naming context completes, the tool reports risk findings for that NC:
 
 ```
-[i] {ncDN}: {n} objects scanned, {critical} Critical, {high} High, {medium} Medium, {informational} Informational risk findings
+[i] {ncDN}: {n} objects scanned, {criticalCount} Critical, {highCount} High, {mediumCount} Medium, {informationalCount} Informational risk findings
 ```
 
-This includes all four risk levels for consistency with the end-of-scan risk summary (Section 20.1). The message integrates with the progress reporting described in Section 9 and is gated by the verbosity level defined in Section 13.7.
+The placeholder names (`{criticalCount}`, `{highCount}`, `{mediumCount}`, `{informationalCount}`) match the names used in the end-of-scan risk summary (Section 20.1) for consistency. This message includes all four risk levels so that per-NC totals are directly comparable with the final summary. The message integrates with the progress reporting described in Section 9 and is gated by the verbosity level defined in Section 13.7.
 
 ### 20.4. Improvements Over ADeleginator — Summary of Corrections
 
