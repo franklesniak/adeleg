@@ -739,7 +739,7 @@ Delegation and template definitions use **XML format** (not JSON), taking advant
 
 ### XSD Schema Validation
 
-All delegation and template XML files are validated against an XSD schema at load time by creating an `XmlReader` with validation settings and reading the document through it:
+All XML files loaded by the tool — whether they contain delegation definitions, template definitions, risk classification configuration, or any combination thereof — are validated against the same `<adeleg>` XSD schema at load time. This includes standalone risk-configuration files that contain only `<unsafeTrustees>`, `<tier0Resources>`, or `<dangerousDelegations>` elements. Validation is performed by creating an `XmlReader` with validation settings and reading the document through it:
 
 ```csharp
 XmlReaderSettings settings = new XmlReaderSettings();
@@ -950,7 +950,7 @@ This mode enables troubleshooting deployment issues (connectivity, credential, c
 
 ### 13.2. File-Based Logging
 
-The tool should support a `--log <path>` option that writes all diagnostic messages (those normally emitted to stderr) to the specified file **in addition to** stderr. The log file should include UTC timestamps in ISO 8601 format (`yyyy-MM-ddTHH:mm:ss.fffZ`) prepended to each line, generated via `DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")`.
+The tool should support a `--log <path>` option that writes all diagnostic messages (those normally emitted to stderr) to the specified file **in addition to** stderr. The log file should include UTC timestamps in ISO 8601 format (`yyyy-MM-ddTHH:mm:ss.fffZ`) prepended to each line, generated via `DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", System.Globalization.CultureInfo.InvariantCulture)`. The `CultureInfo.InvariantCulture` parameter ensures the timestamp format is consistent regardless of the system's current culture settings (some cultures use different digit shapes or calendar systems that would produce non-ISO output).
 
 **Implementation in .NET Framework 2.0:** Use a `StreamWriter` wrapping a `FileStream` opened with `FileMode.Create` and `FileAccess.Write`. All stderr output — both `Console.Error.Write()` and `Console.Error.WriteLine()` calls — should be routed through a single logging helper. The helper maintains a boolean flag tracking whether the current position is at the start of a new line. Timestamps are prepended **only at the start of a new line** — not on every write call. Critically, the helper must also scan the text passed to each `Write()` or `WriteLine()` call for **embedded newline characters** (`\n` or `\r\n`), because a single call may contain multiple lines (e.g., exception messages with stack traces). When an embedded newline is found within the text, the helper inserts a timestamp after each newline boundary so that every resulting line in the log is timestamped. For `Write()` calls (partial-line output such as progress updates), the helper writes the text without a timestamp prefix unless the current position is at the start of a new line. For `WriteLine()` calls, the helper prepends the timestamp if the current position is at the start of a new line, writes the text (with embedded newline processing), and marks the next position as a new line. This approach ensures every line in the log file has exactly one timestamp, even when a single API call emits multi-line content. The `StreamWriter` must be disposed via a `using` block (or explicit `Close()` in a `finally`) at tool exit to ensure all buffered content is flushed.
 
@@ -1428,8 +1428,8 @@ This evaluation is O(1) per ACE (dictionary lookups + bitwise flag checks), addi
 
 The `Risk Level` column should be:
 
-- **Populated** for: `Owner` rows where the owner is an unsafe trustee, all `Allow ACE` rows that match a risk rule, and `Delegation`/`Built-in`/`Expected allow ACE found` rows where the underlying ACE is an Allow ACE with a matching risk profile.
-- **Empty (blank)** for: `Owner` rows where the owner is not an unsafe trustee, all `Warning` rows, all `Deny ACE` rows, and any Allow ACE rows that do not match any risk rule.
+- **Populated** for: `Owner` rows where the owner is an unsafe trustee, and all `Allow ACE` rows that match a risk rule.
+- **Empty (blank)** for: `Delegation`/`Built-in`/`Expected allow ACE found` summary rows (these are aggregation rows that may correspond to multiple constituent ACEs with different risk levels; consumers should derive summary-level risk from the individual `Allow ACE` rows that follow), `Owner` rows where the owner is not an unsafe trustee, all `Warning` rows, all `Deny ACE` rows, and any Allow ACE rows that do not match any risk rule.
 
 ---
 
