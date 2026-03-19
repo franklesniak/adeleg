@@ -1125,7 +1125,7 @@ The tool targets .NET Framework 2.0 for the following reasons:
 | Trade-off | Mitigation |
 |---|---|
 | No LINQ | Use explicit loops and `Dictionary`/`List` operations |
-| No `HashSet<T>` | Use `Dictionary<string, bool>` with `ContainsKey()` (see Section 16.6) |
+| No `HashSet<T>` | Use `Dictionary<string, bool>` with `ContainsKey()` (see Section 20.5) |
 | No modern TLS defaults | Rely on `AuthenticationTypes.Secure` (SASL/Kerberos) as the default transport security |
 | No `async`/`await` | The tool is single-threaded by design; async is not needed |
 | No `SecureString` in `DirectoryEntry` | `DirectoryEntry` accepts only `string` for passwords regardless of framework version |
@@ -1585,7 +1585,7 @@ The following table summarizes the specific ADeleginator defects and limitations
 
 The risk classification logic adds only dictionary lookups and bitwise flag checks per ACE — all O(1) operations. The primary additional cost is the startup-phase group resolution via `WindowsIdentity.GetCurrent().Groups` (reads from the local access token — no LDAP query) and `gpLink` resolution (one read per Tier 0 container). These are negligible compared to the main subtree scan.
 
-The `--risk-csv` filtered output requires a second pass through the results only if streaming output is used. If results are accumulated in memory, both the main CSV and the filtered CSV can be written in a single pass.
+The `--risk-csv` filtered output does not require a second pass. As each row is emitted during the scan, it can be conditionally written to the `--risk-csv` writer (if its `Risk Level` meets the `--risk-level` threshold) in addition to (or instead of) the main CSV writer. Both outputs are produced in a single pass regardless of whether streaming or in-memory accumulation is used.
 
 ### 20.7. Integration with Existing Filtering
 
