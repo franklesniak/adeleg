@@ -942,8 +942,8 @@ The tool should support a `--validate` flag that checks configuration and connec
 
 1. Reads and parses all delegation/template XML files (if any are specified via `--delegations` or `--templates`).
 2. Connects to the target domain controller (or auto-discovers one) and reads the RootDSE.
-3. Enumerates `Forest.Domains` and resolves domain SIDs.
-4. Loads the schema (classes, attributes, GUIDs).
+3. Enumerates domains and resolves domain SIDs. If `--server` is specified, use `Forest.GetForest(new DirectoryContext(DirectoryContextType.DirectoryServer, serverName)).Domains` (not `Forest.GetCurrentForest().Domains`) so validation is performed against the intended DC rather than the auto-discovered one.
+4. Loads the schema (classes, attributes, GUIDs). If `--server` is specified, use `ActiveDirectorySchema.GetSchema(new DirectoryContext(DirectoryContextType.DirectoryServer, serverName))` rather than `ActiveDirectorySchema.GetCurrentSchema()`, consistent with the `--server` routing rule defined in Section 2.
 5. Reports the results to stderr and exits with code 0 on success or a nonzero code on failure.
 
 This mode enables troubleshooting deployment issues (connectivity, credential, configuration) without performing the full subtree scan.
@@ -963,7 +963,7 @@ After the scan completes, the tool should emit a summary to stderr:
 [i] Scan duration: {elapsed}.
 ```
 
-Where `{elapsed}` is formatted as `hh:mm:ss` (or `mm:ss` for scans under one hour). The summary should also include risk classification counts if risk classification is enabled (see Section 20.1).
+Where `{elapsed}` is formatted as `hh:mm:ss` (or `mm:ss` for scans under one hour). This scan summary is immediately followed by the risk summary defined in Section 20.1, which reports the count of findings at each risk level. Risk classification is an integrated, always-on feature (see Sections 16–20) — no separate flag is needed to enable it.
 
 ### 13.4. Subtree Exclusion
 
@@ -985,7 +985,7 @@ The tool supports the following authentication modes, ordered by preference:
 |---|---|---|---|
 | 1 | **Windows SSO (SSPI/Negotiate)** | *(no credential flags)* | `new DirectoryEntry(path)` — uses process identity automatically. This is the recommended default. |
 | 2 | **Interactive password entry** | `--username <user> --password *` | Read password character-by-character via `Console.ReadKey(true)` in a loop, building a `string`. Pass to `new DirectoryEntry(path, username, password, AuthenticationTypes.Secure)`. |
-| 3 | **Environment variable** | `--username <user> --password-env <VARIABLE_NAME>` | Read password from `Environment.GetEnvironmentVariable(variableName)`, where `variableName` is the value passed to `--password-env`. Less visible than command-line arguments. Example: `--password-env ADELEG_PASSWORD` reads from the `ADELEG_PASSWORD` environment variable. |
+| 3 | **Environment variable** | `--username <user> --password-env <VARIABLE_NAME>` | Read password from `Environment.GetEnvironmentVariable(variableName)`, where `variableName` is the value passed to `--password-env`. If the environment variable is unset or empty, the tool must fail immediately with a clear error message to stderr and exit with a nonzero code — it must **not** attempt a bind with a null/empty password (which could lead to unexpected authentication behavior or weaker-than-intended security). Less visible than command-line arguments. Example: `--password-env ADELEG_PASSWORD` reads from the `ADELEG_PASSWORD` environment variable. |
 
 **Deprecation of cleartext command-line password:** The `--password <value>` form (where the password is supplied directly on the command line) is **not supported**. Passwords supplied on the command line are visible via process listings (`tasklist /v`, `Get-Process`, `/proc/*/cmdline`), creating a credential exposure risk. If automation requires non-interactive credential supply, use the `--password-env` option.
 
@@ -1005,9 +1005,9 @@ The tool should support a `--verbose` flag (may be specified multiple times for 
 
 | Level | Flag | Behavior |
 |---|---|---|
-| 0 (default) | *(none)* | Emit only errors, warnings, summary statistics, and risk summary to stderr. |
-| 1 | `--verbose` | Add per-naming-context progress messages and risk counts. |
-| 2 | `--verbose --verbose` | Add per-object progress reporting (every N objects) and detailed diagnostic messages. |
+| 0 (default) | *(none)* | Emit errors, warnings, per-object progress counter (the `\r` overwrite from Section 9 Step 5), end-of-scan summary (Section 13.3), and risk summary (Section 20.1) to stderr. |
+| 1 | `--verbose` | Additionally emit per-naming-context completion messages with object counts and risk counts (see Section 20.3). |
+| 2 | `--verbose --verbose` | Additionally emit detailed diagnostic messages (e.g., delegation matching decisions, ACE filter decisions, individual object processing details). |
 
 ### 13.8. Output Path Defaults
 
@@ -1489,7 +1489,7 @@ This per-row annotation enables the report consumer to immediately identify whic
 After the scan completes, the tool prints a risk summary to stderr:
 
 ```
-[Risk Summary] Critical: {n}, High: {n}, Medium: {n}, Informational: {n}
+[i] Risk summary: Critical: {n}, High: {n}, Medium: {n}, Informational: {n}
 ```
 
 If any `Critical` or `High` findings exist, an additional alert is printed:
@@ -1535,13 +1535,13 @@ The tool supports filtered risk output via the following CLI options:
 
 ### 20.3. Per-Naming-Context Risk Counts
 
-During the scan, as each naming context completes, the tool reports risk findings for that NC:
+At verbosity level 1 or higher (`--verbose`), as each naming context completes, the tool reports risk findings for that NC:
 
 ```
 [i] {ncDN}: {n} objects scanned, {critical} Critical, {high} High, {medium} Medium risk findings
 ```
 
-This integrates with the progress reporting described in Section 9.
+This integrates with the progress reporting described in Section 9 and is gated by the verbosity level defined in Section 13.7.
 
 ### 20.4. Improvements Over ADeleginator — Summary of Corrections
 
