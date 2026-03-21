@@ -394,7 +394,7 @@ int adminCount = result.Properties.Contains("adminCount")
     : 0;
 ```
 
-Any nonzero integer value indicates a protected object.
+Any nonzero integer value indicates that the object is or has been treated as protected; however, effective AdminSDHolder ACE suppression still relies on the combined check described above (`adminCount != 0` and `AreAccessRulesProtected == true`).
 
 **Stale adminCount caveat:** The `adminCount` attribute is notoriously stale in AD — it is typically present on objects that are or were members of protected groups, but it is not always cleared when an object is removed from such a group. Additionally, `adminCount` can be manually modified. Formerly-protected objects may have `adminCount=1` but are no longer in the population of objects whose security descriptors are stamped from AdminSDHolder by SDProp. Because AdminSDHolder ACE filtering requires both `adminCount != 0` and `AreAccessRulesProtected == true` (see above), stale `adminCount` objects whose inheritance has been restored will correctly have their ACEs reported rather than suppressed. If `adminCount != 0` but `AreAccessRulesProtected` is `false`, the tool logs a warning to stderr noting the inconsistency, as this may indicate a stale `adminCount`.
 

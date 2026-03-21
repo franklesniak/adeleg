@@ -232,7 +232,7 @@ Deny ACEs for `Everyone` that deny the `Change Password` control access right ar
 
 ### AdminSDHolder ACEs
 
-For objects with a non-zero `adminCount` (the code checks `adminCount != "0"`, defaulting to `"0"` if the attribute is missing or unreadable), ACEs that appear in the AdminSDHolder DACL are suppressed. This is because objects marked as protected (commonly indicated by `adminCount != 0`) have their security descriptors periodically stamped (copied) from AdminSDHolder by the SDProp process.
+For objects with a non-zero `adminCount` (the code reads this integer attribute as a string and checks `adminCount != "0"`, defaulting to `"0"` if the attribute is missing or unreadable), ACEs that appear in the AdminSDHolder DACL are suppressed. This is because objects marked as protected (commonly indicated by a non-zero `adminCount`) have their security descriptors periodically stamped (copied) from AdminSDHolder by the SDProp process.
 
 > **Note:** This tool determines AdminSDHolder-related suppression based on per-object state (e.g., `adminCount`) rather than inferring protection from membership in a list of "protected groups." This avoids brittle heuristics based on group names (which can be localized or renamed) or static protected-group lists (which can be impacted by environment customizations).
 
