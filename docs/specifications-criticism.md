@@ -495,7 +495,7 @@ The spec suppresses deny ACEs for `Everyone` that deny `DELETE`, `DS_DELETE_CHIL
 
 ### 6.7. AdminSDHolder Matching Does Not Account for Stale adminCount — Consider `ActiveDirectorySecurity.AreAccessRulesProtected`
 
-The spec excludes AdminSDHolder-matching ACEs for objects with `adminCount != 0`. However, `adminCount` is notoriously stale in AD — it is set when an object is added to a protected group but not always cleared when the object is removed. This means formerly-protected objects that still have `adminCount=1` but are no longer in a protected group will have their ACEs incorrectly filtered. The revised spec should acknowledge this limitation and consider whether additional validation (e.g., checking actual group membership) is warranted.
+The spec excludes AdminSDHolder-matching ACEs for objects with `adminCount != 0`. However, `adminCount` is notoriously stale in AD — it is typically present on objects that are or were members of protected groups but is not always cleared when an object is removed from such a group. This means formerly-protected objects that still have `adminCount=1` but are no longer in a protected group will have their ACEs incorrectly filtered. The revised spec should acknowledge this limitation and consider whether additional validation (e.g., checking actual group membership) is warranted.
 
 Additionally, the DACL inheritance protection check for AdminSDHolder-managed objects should use `ActiveDirectorySecurity.AreAccessRulesProtected` (see Section 1.5.18) rather than manually checking the `SE_DACL_PROTECTED` flag.
 
@@ -891,7 +891,7 @@ The following resources should be classified as Tier 0 by default. Resources are
 | # | Identification Method | Identity | Rationale |
 |---|---|---|---|
 | 15 | DN = `<domainDN>` (the domain root object) | Domain root object | ACEs here can grant domain-wide permissions via inheritance |
-| 16 | DN = `CN=AdminSDHolder,CN=System,<domainDN>` | AdminSDHolder | SDProp copies this DACL to all protected accounts |
+| 16 | DN = `CN=AdminSDHolder,CN=System,<domainDN>` | AdminSDHolder | SDProp periodically stamps this DACL onto objects marked as protected |
 | 17 | DN = `OU=Domain Controllers,<domainDN>` | Domain Controllers OU | Contains all DC machine accounts |
 | 18 | DN = `CN=Users,<domainDN>` | Users container | Default location for privileged accounts |
 | 19 | DN = `CN=Schema,CN=Configuration,<forestRootDN>` | Schema partition root | Controls the AD schema |

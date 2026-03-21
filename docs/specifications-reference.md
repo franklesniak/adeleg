@@ -232,7 +232,9 @@ Deny ACEs for `Everyone` that deny the `Change Password` control access right ar
 
 ### AdminSDHolder ACEs
 
-For objects with a non-zero `adminCount` (the code checks `adminCount != "0"`, defaulting to `"0"` if the attribute is missing or unreadable), ACEs that appear in the AdminSDHolder DACL are suppressed. This is because the SDProp process copies the AdminSDHolder's DACL onto protected objects.
+For objects with a non-zero `adminCount` (the code checks `adminCount != "0"`, defaulting to `"0"` if the attribute is missing or unreadable), ACEs that appear in the AdminSDHolder DACL are suppressed. This is because objects marked as protected (commonly indicated by `adminCount != 0`) have their security descriptors periodically stamped (copied) from AdminSDHolder by the SDProp process.
+
+> **Note:** This tool determines AdminSDHolder-related suppression based on per-object state (e.g., `adminCount`) rather than inferring protection from membership in a list of "protected groups." This avoids brittle heuristics based on group names (which can be localized or renamed) or static protected-group lists (which can be impacted by environment customizations).
 
 ### Ignored Control Access Rights
 
@@ -245,7 +247,7 @@ ACEs granting only `DS_CONTROL_ACCESS` for specific control access rights that d
 
 DACL inheritance blocking is not reported as a warning for:
 - Objects of class `groupPolicyContainer` (GPOs block inheritance by design)
-- Objects with `adminCount != 0` (expected to block inheritance via SDProp)
+- Objects with `adminCount != 0` (expected to have inheritance blocked as part of AdminSDHolder protection)
 - Specific well-known containers: `CN=AdminSDHolder,CN=System`, `CN=VolumeTable,CN=FileLinks,CN=System`, `CN=Keys`, `CN=WMIPolicy,CN=System`, `CN=SOM,CN=WMIPolicy,CN=System`
 
 ### Built-in Delegation Definitions
@@ -596,7 +598,7 @@ With `--show-warning-unreadable`, each error generates a CSV record with categor
 1. **Single forest scope**: The tool assumes all naming contexts returned by the RootDSE belong to the same forest and that cross-forest trusts are not traversed.
 2. **Standard schema**: Object type GUIDs and class names are expected to match the standard Active Directory schema. Extended or custom schema classes are supported as long as they follow standard naming conventions.
 3. **Canonical ACL structure**: The tool assumes ACLs follow the canonical order (explicit deny, explicit allow, inherited deny, inherited allow) for correct analysis, but it explicitly detects and warns about non-canonical ACLs.
-4. **AdminSDHolder behavior**: Objects with `adminCount != 0` are assumed to have their DACLs managed by SDProp. Their ACEs that match the AdminSDHolder DACL are excluded.
+4. **AdminSDHolder behavior**: Objects with `adminCount != 0` are assumed to be protected objects whose DACLs are periodically stamped from AdminSDHolder by SDProp. Their ACEs that match the AdminSDHolder DACL are excluded.
 5. **Creator Owner semantics**: ACEs with the `Creator Owner` SID in schema defaults are assumed to be replaced by the object owner at creation time, following standard AD behavior.
 
 ### Limitations
