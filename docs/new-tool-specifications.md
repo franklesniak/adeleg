@@ -493,12 +493,26 @@ However, `adminCount` MUST NOT be used for ACE suppression decisions. It is reta
 
 ##### Optional informational findings (recommended)
 
-The tool SHOULD emit INFO-level "AdminSDHolder anomaly" findings:
+The tool SHOULD emit AdminSDHolder anomaly findings as `Warning`-category CSV rows (see Section 10, Category Values). Each anomaly row uses the following format:
 
-- **Stale/Orphaned adminCount:** `adminCount != 0` but the principal is NOT SDProp in-scope by SID/membership evaluation. This may indicate a formerly-protected principal whose `adminCount` was never cleared.
-- **Cleared/unset adminCount:** The principal IS SDProp in-scope by SID/membership evaluation but `adminCount` is null/0. This may indicate that the security descriptor already matched the AdminSDHolder template when SDProp last ran, so `adminCount` was not set.
+| Column | Value |
+| --- | --- |
+| **Resource** | The DN of the affected principal |
+| **Trustee** | `Global` (these are object-level findings, not trustee-specific) |
+| **Trustee type** | empty |
+| **Category** | `Warning` |
+| **Details** | Prefixed with `AdminSDHolder anomaly: ` followed by a short description (see below) |
+| **Risk Level** | empty (consistent with all other Warning-category rows — see Section 18.4) |
+| **Current User Can Exploit** | empty |
 
-These findings help operations/security teams identify AdminSDHolder hygiene issues, but MUST NOT affect suppression decisions.
+Two anomaly conditions are defined:
+
+- **`AdminSDHolder anomaly: stale adminCount`** — `adminCount != 0` but the principal is NOT SDProp in-scope by SID/membership evaluation. This may indicate a formerly-protected principal whose `adminCount` was never cleared.
+- **`AdminSDHolder anomaly: cleared adminCount`** — The principal IS SDProp in-scope by SID/membership evaluation but `adminCount` is null/0. This may indicate that the security descriptor already matched the AdminSDHolder template when SDProp last ran, so `adminCount` was not set.
+
+Emission of these CSV rows MUST NOT depend on the `--verbose` level. Implementations MAY additionally log a summary count of AdminSDHolder anomalies to stderr when `--verbose >= 2`.
+
+These findings help operations/security teams identify AdminSDHolder hygiene issues, but MUST NOT affect ACE suppression decisions.
 
 ##### Offline/CSV prerequisites
 
@@ -776,7 +790,7 @@ The CSV output has **7 columns**:
 | Category | Meaning |
 | --- | --- |
 | `Owner` | The trustee owns the object, granting implicit full control |
-| `Warning` | A structural issue (unreadable SD, blocked DACL inheritance, non-canonical ACL) or a deleted trustee finding |
+| `Warning` | A structural issue (unreadable SD, blocked DACL inheritance, non-canonical ACL), a deleted trustee finding, or an AdminSDHolder anomaly |
 | `Allow ACE` | An explicit allow ACE not explained by any known delegation |
 | `Deny ACE` | An explicit deny ACE not explained by any known delegation |
 | `Built-in` | A delegation matching a built-in definition (only shown with `--show-builtin`) |
@@ -805,8 +819,9 @@ For each location/result pair in the scan results:
 3. **DACL protection**: One `Warning` record if `AreAccessRulesProtected` is `true` and the object is not in an excluded category.
 4. **Non-canonical ACL**: One `Warning` record if the ACL is not in canonical order. The offending ACE is described.
 5. **Deleted trustees**: One `Warning` record per ACE whose trustee no longer exists.
-6. **Orphan ACEs**: One `Allow ACE` or `Deny ACE` record per unmatched ACE, with access rights described.
-7. **Delegations**: For each matched delegation (built-in only if `--show-builtin`):
+6. **AdminSDHolder anomalies**: One `Warning` record per principal with an anomalous `adminCount` state (see Section 6, Optional informational findings).
+7. **Orphan ACEs**: One `Allow ACE` or `Deny ACE` record per unmatched ACE, with access rights described.
+8. **Delegations**: For each matched delegation (built-in only if `--show-builtin`):
    - One `Built-in` or `Delegation` record with the delegation description
    - One `Expected allow/deny ACE found` record per matched ACE, prefixed with "In delegation: "
    - One `Expected allow/deny ACE missing` record per unmatched expected ACE, prefixed with "In delegation: "
