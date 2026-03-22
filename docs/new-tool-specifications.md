@@ -414,9 +414,11 @@ Only evaluate SDProp in-scope status for security principals. At minimum include
 
 Do NOT use `objectCategory=person` as a shortcut without explicit exclusion of non-security principals (e.g., `contact`). Prefer explicit object classes and presence of `objectSid`.
 
-##### Protected Set Data (baseline + extensions)
+##### Protected Set Data (authoritative baseline)
 
-The tool MUST define the protected set by **SID**, not by name, in a versioned data artifact (e.g., JSON/YAML/XML) shipped with the tool. The tool MUST support an operator-configurable extension list of additional SIDs to treat as protected (for customized environments).
+The tool MUST define the **authoritative protected set** by **SID**, not by name, in a versioned data artifact (e.g., JSON/YAML/XML) shipped with the tool. This authoritative protected-set data is the **only** source used to determine whether an object is SDProp in-scope.
+
+The tool MUST also support a **separate operator-configurable suppression-override SID list** for customized environments. This override list MAY be used to adjust or extend suppression/filtering behavior but MUST NOT be treated as part of the SDProp protected set and MUST NOT affect SDProp in-scope determination.
 
 Baseline protected set (minimum):
 
