@@ -382,11 +382,105 @@ Deny ACEs for `Everyone` that deny the `Change Password` control access right ar
 
 ### AdminSDHolder ACEs
 
-For objects where `adminCount != 0` **and** `AreAccessRulesProtected` is `true`, ACEs that appear in the AdminSDHolder DACL are suppressed. This is because objects marked as protected (commonly indicated by `adminCount != 0`) have their security descriptors — including inheritance blocking — periodically stamped (copied) from AdminSDHolder by SDProp. Both conditions are required: `adminCount` alone is unreliable because it is notoriously stale — it is typically present on objects that are or were members of protected groups, but it is not always cleared when an object is removed from such a group. If `adminCount != 0` but `AreAccessRulesProtected` is `false`, the object is likely no longer in the population of objects whose security descriptors are stamped from AdminSDHolder by SDProp, and its explicit ACEs represent real delegations that should be reported (not filtered).
+For objects that are determined to be **AdminSDHolder-protected (SDProp in-scope)**, ACEs that appear in the AdminSDHolder DACL are suppressed. This is because SDProp periodically stamps (copies) the AdminSDHolder security descriptor onto protected principals.
 
-> **Note:** This tool determines AdminSDHolder-related suppression based on per-object state (`adminCount` and `AreAccessRulesProtected`) rather than inferring protection from membership in a list of "protected groups." This avoids brittle heuristics based on group names (which can be localized or renamed) or static protected-group lists (which can be impacted by environment customizations).
+#### Determining "AdminSDHolder-protected (SDProp in-scope)"
 
-The `adminCount` attribute is parsed as an integer, not a string:
+This tool MUST NOT use `adminCount` as the authoritative signal for AdminSDHolder/SDProp protection. The `adminCount` attribute is diagnostic — it is only set when SDProp actually modifies the security descriptor; it can be cleared or set arbitrarily, and it may remain null/0 even for SDProp-protected principals when the security descriptor already matches the AdminSDHolder template.
+
+Instead, this tool MUST determine SDProp in-scope status using **SID-based** evaluation (not name-based), because names can be renamed or localized while SIDs remain stable.
+
+An object is treated as AdminSDHolder-protected (SDProp in-scope) if and only if:
+
+1. The object is a **security principal**, AND
+2. The object is either:
+   - one of the protected groups/accounts itself (by `objectSid`), OR
+   - a direct or transitive member of a protected group (nested membership), OR
+   - an explicitly protected account SID (if enabled; see Protected Set Data below).
+
+If SDProp in-scope status cannot be determined reliably (due to permissions errors, data gaps, or other failures), the tool MUST **fail safe** and treat the object as **not protected for suppression purposes** (i.e., report its ACEs rather than suppress them).
+
+##### Security principal scope
+
+Only evaluate SDProp in-scope status for security principals. At minimum include:
+
+- `user`
+- `group`
+- `computer`
+- `msDS-ManagedServiceAccount`
+- `msDS-GroupManagedServiceAccount`
+- `foreignSecurityPrincipal` (cross-domain members)
+
+Do NOT use `objectCategory=person` as a shortcut without explicit exclusion of non-security principals (e.g., `contact`). Prefer explicit object classes and presence of `objectSid`.
+
+##### Protected Set Data (baseline + extensions)
+
+The tool MUST define the protected set by **SID**, not by name, in a versioned data artifact (e.g., JSON/YAML/XML) shipped with the tool. The tool MUST support an operator-configurable extension list of additional SIDs to treat as protected (for customized environments).
+
+Baseline protected set (minimum):
+
+| SID | Identity |
+| --- | --- |
+| `S-1-5-32-544` | BUILTIN\Administrators |
+| `S-1-5-32-548` | BUILTIN\Account Operators |
+| `S-1-5-32-549` | BUILTIN\Server Operators |
+| `S-1-5-32-550` | BUILTIN\Print Operators |
+| `S-1-5-32-551` | BUILTIN\Backup Operators |
+| `S-1-5-21-<domain>-512` | Domain Admins |
+| `S-1-5-21-<root-domain>-518` | Schema Admins (forest root domain) |
+| `S-1-5-21-<root-domain>-519` | Enterprise Admins (forest root domain) |
+
+Optional explicit protected accounts (enabled by default; configurable):
+
+| SID | Identity |
+| --- | --- |
+| `S-1-5-21-<domain>-500` | Administrator |
+| `S-1-5-21-<domain>-502` | KRBTGT |
+
+> **Forest scope requirement:** In multi-domain forests, `<domain>` and `<root-domain>` may differ. The tool MUST determine the forest root domain SID to correctly evaluate `…-518` (Schema Admins) and `…-519` (Enterprise Admins).
+
+##### Protected set candidates (configuration or future baseline)
+
+Some environments treat additional SIDs as SDProp-relevant candidates (e.g., Domain Controllers `…-516`, RODCs `…-521`, Cert Publishers `…-517`, BUILTIN\Replicator `S-1-5-32-552`). These MUST NOT be treated as baseline unless validated for the target environments; they MAY be enabled via the extension mechanism.
+
+##### Anti-pattern: never protect entire domain
+
+Do NOT include Domain Users (`…-513`), Domain Guests (`…-514`), or Domain Computers (`…-515`) in the protected set; doing so would classify most/all principals as protected and suppress meaningful findings.
+
+##### Membership evaluation requirements
+
+Membership evaluation MUST:
+
+- Be transitive (nested groups).
+- Handle primary group semantics (`memberOf` does not include the primary group; `primaryGroupID` must be evaluated separately).
+- Handle cross-domain/foreign security principals as feasible.
+- Fail safe (undetermined → no suppression).
+
+##### Allowed membership evaluation approaches
+
+**1) Token-based (preferred):**
+
+- Read `tokenGroups` and evaluate presence of protected SIDs.
+- `tokenGroupsGlobalAndUniversal` MAY be used only as a supplement; it MUST NOT be the sole source because it can omit domain-local memberships.
+- Do not rely on filtering/searching using `tokenGroups` in LDAP queries; treat it as a per-object read.
+
+**2) Directory expansion:**
+
+- Resolve protected group SIDs to group DNs first (SID → object → DN), then evaluate transitive membership (e.g., chain rule) using the DN.
+- Do not embed raw SIDs into `memberOf` chain matching; `memberOf` compares DNs.
+- If using `memberOf` traversal, explicitly compute and include the principal's primary group via `primaryGroupID`.
+
+##### Performance guidance
+
+For scale, prefer:
+
+- Precompute transitive membership for protected groups once (per domain/forest), produce a hash set of protected principal SIDs, then do O(1) per-object checks.
+- Cache: domain SID, forest-root domain SID, protected group SID → group DN (if doing DN-based chain matching).
+- Fail-safe rule still applies: incomplete precompute → no suppression for affected objects.
+
+##### `adminCount` treated as diagnostic only
+
+The `adminCount` attribute is parsed as an integer:
 
 ```csharp
 int adminCount = result.Properties.Contains("adminCount")
@@ -394,9 +488,27 @@ int adminCount = result.Properties.Contains("adminCount")
     : 0;
 ```
 
-Any nonzero integer value indicates that the object is or has been treated as protected; however, effective AdminSDHolder ACE suppression still relies on the combined check described above (`adminCount != 0` and `AreAccessRulesProtected == true`).
+However, `adminCount` MUST NOT be used for ACE suppression decisions. It is retained in the data collection solely for the optional informational findings described below.
 
-**Stale adminCount caveat:** The `adminCount` attribute is notoriously stale in AD — it is typically present on objects that are or were members of protected groups, but it is not always cleared when an object is removed from such a group. Additionally, `adminCount` can be manually modified. Formerly-protected objects may have `adminCount=1` but are no longer in the population of objects whose security descriptors are stamped from AdminSDHolder by SDProp. Because AdminSDHolder ACE filtering requires both `adminCount != 0` and `AreAccessRulesProtected == true` (see above), stale `adminCount` objects whose inheritance has been restored will correctly have their ACEs reported rather than suppressed. If `adminCount != 0` but `AreAccessRulesProtected` is `false`, the tool logs a warning to stderr noting the inconsistency, as this may indicate a stale `adminCount`.
+##### Optional informational findings (recommended)
+
+The tool SHOULD emit INFO-level "AdminSDHolder anomaly" findings:
+
+- **Stale/Orphaned adminCount:** `adminCount != 0` but the principal is NOT SDProp in-scope by SID/membership evaluation. This may indicate a formerly-protected principal whose `adminCount` was never cleared.
+- **Cleared/unset adminCount:** The principal IS SDProp in-scope by SID/membership evaluation but `adminCount` is null/0. This may indicate that the security descriptor already matched the AdminSDHolder template when SDProp last ran, so `adminCount` was not set.
+
+These findings help operations/security teams identify AdminSDHolder hygiene issues, but MUST NOT affect suppression decisions.
+
+##### Offline/CSV prerequisites
+
+If suppression depends on comparing ACEs to the AdminSDHolder template DACL, the data collection MUST include:
+
+- `CN=AdminSDHolder,CN=System,<domain>` with its full `nTSecurityDescriptor` (or equivalent export fields).
+- Sufficient attributes to evaluate protected status: `objectSid`, group membership inputs (`tokenGroups` if used, or enough membership data to expand group nesting), `primaryGroupID` (if using `memberOf`-based expansion).
+- `computer` objects (needed if DC/RODC-related candidates are later enabled).
+- Disabled accounts (e.g., KRBTGT should not be filtered out).
+
+**Fail-safe:** If the AdminSDHolder template security descriptor cannot be retrieved, do not suppress "template ACEs" — report them instead.
 
 ### Ignored Control Access Rights
 
@@ -410,7 +522,7 @@ ACEs granting only `ExtendedRight` for specific control access rights that do no
 DACL inheritance blocking (detected via `ActiveDirectorySecurity.AreAccessRulesProtected`) is not reported as a warning for:
 
 - Objects of class `groupPolicyContainer` (GPOs block inheritance by design)
-- Objects with `adminCount != 0` (expected to have inheritance blocked as part of AdminSDHolder protection)
+- Objects that are determined to be **AdminSDHolder-protected (SDProp in-scope)** (expected to have inheritance blocked as part of AdminSDHolder protection; see [Determining "AdminSDHolder-protected (SDProp in-scope)"](#determining-adminsdholder-protected-sdprop-in-scope) above)
 - Specific well-known containers: `CN=AdminSDHolder,CN=System`, `CN=VolumeTable,CN=FileLinks,CN=System`, `CN=Keys`, `CN=WMIPolicy,CN=System`, `CN=SOM,CN=WMIPolicy,CN=System`
 
 ### Built-in Delegation Definitions
@@ -1272,7 +1384,7 @@ The following resources are classified as Tier 0 by default. Resources are ident
 | # | Identification Method | Identity | Rationale |
 | --- | --- | --- | --- |
 | 15 | DN = `{domainDN}` (the domain root object) | Domain root object | ACEs here can grant domain-wide permissions via inheritance |
-| 16 | DN = `CN=AdminSDHolder,CN=System,{domainDN}` | AdminSDHolder | SDProp periodically stamps this DACL onto objects marked as protected |
+| 16 | DN = `CN=AdminSDHolder,CN=System,{domainDN}` | AdminSDHolder | SDProp periodically stamps this DACL onto AdminSDHolder-protected (SDProp in-scope) principals |
 | 17 | DN = `OU=Domain Controllers,{domainDN}` | Domain Controllers OU | Contains all DC machine accounts |
 | 18 | DN = `CN=Users,{domainDN}` | Users container | Default location for privileged accounts |
 | 19 | DN = `CN=Schema,CN=Configuration,{forestRootDN}` | Schema partition root | Controls the AD schema |

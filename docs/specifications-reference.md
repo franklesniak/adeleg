@@ -233,9 +233,9 @@ Deny ACEs for `Everyone` that deny the `Change Password` control access right ar
 
 ### AdminSDHolder ACEs
 
-For objects with a non-zero `adminCount` (the code reads this integer attribute as a string and checks `adminCount != "0"`, defaulting to `"0"` if the attribute is missing or unreadable), ACEs that appear in the AdminSDHolder DACL are suppressed. This is because objects marked as protected (commonly indicated by a non-zero `adminCount`) have their security descriptors periodically stamped (copied) from AdminSDHolder by the SDProp process.
+For objects with a non-zero `adminCount` (the code reads this integer attribute as a string and checks `adminCount != "0"`, defaulting to `"0"` if the attribute is missing or unreadable), ACEs that appear in the AdminSDHolder DACL are suppressed. This is because AdminSDHolder-protected (SDProp in-scope) objects have their security descriptors periodically stamped (copied) from AdminSDHolder by the SDProp process.
 
-> **Note:** This tool determines AdminSDHolder-related suppression based on per-object state (e.g., `adminCount`) rather than inferring protection from membership in a list of "protected groups." This avoids brittle heuristics based on group names (which can be localized or renamed) or static protected-group lists (which can be impacted by environment customizations).
+> **Known limitation:** This tool uses `adminCount` as a proxy for AdminSDHolder/SDProp protection. However, `adminCount` is a diagnostic attribute — it is only set when SDProp actually modifies the security descriptor; it can be cleared or set arbitrarily, and it may remain null/0 even for SDProp-protected principals when the security descriptor already matches the AdminSDHolder template. The authoritative way to determine SDProp in-scope status is through **SID-based evaluation** of membership in well-known protected groups (whose SIDs are stable and cannot be renamed or localized). Using `adminCount` as the signal means: (1) an unprotected principal with `adminCount=1` (stale or manually set) will have its ACEs incorrectly suppressed, and (2) a genuinely protected principal with `adminCount` cleared or null will not have its ACEs suppressed when they should be. A future version of this tool should replace `adminCount`-based suppression with SID-based protected principal evaluation. See the new tool specification for the corrected approach.
 
 ### Ignored Control Access Rights
 
@@ -249,7 +249,7 @@ ACEs granting only `DS_CONTROL_ACCESS` for specific control access rights that d
 DACL inheritance blocking is not reported as a warning for:
 
 - Objects of class `groupPolicyContainer` (GPOs block inheritance by design)
-- Objects with `adminCount != 0` (expected to have inheritance blocked as part of AdminSDHolder protection)
+- Objects with `adminCount != 0` (used as a proxy for AdminSDHolder protection — see the [known limitation](#adminsdholder-aces) above)
 - Specific well-known containers: `CN=AdminSDHolder,CN=System`, `CN=VolumeTable,CN=FileLinks,CN=System`, `CN=Keys`, `CN=WMIPolicy,CN=System`, `CN=SOM,CN=WMIPolicy,CN=System`
 
 ### Built-in Delegation Definitions
@@ -619,7 +619,7 @@ With `--show-warning-unreadable`, each error generates a CSV record with categor
 1. **Single forest scope**: The tool assumes all naming contexts returned by the RootDSE belong to the same forest and that cross-forest trusts are not traversed.
 2. **Standard schema**: Object type GUIDs and class names are expected to match the standard Active Directory schema. Extended or custom schema classes are supported as long as they follow standard naming conventions.
 3. **Canonical ACL structure**: The tool assumes ACLs follow the canonical order (explicit deny, explicit allow, inherited deny, inherited allow) for correct analysis, but it explicitly detects and warns about non-canonical ACLs.
-4. **AdminSDHolder behavior**: Objects with `adminCount != 0` are assumed to be protected objects whose DACLs are periodically stamped from AdminSDHolder by SDProp. Their ACEs that match the AdminSDHolder DACL are excluded.
+4. **AdminSDHolder behavior**: Objects with `adminCount != 0` are used as a proxy for AdminSDHolder-protected (SDProp in-scope) objects whose DACLs are periodically stamped from AdminSDHolder by SDProp. Their ACEs that match the AdminSDHolder DACL are excluded. This is a known limitation — `adminCount` is a diagnostic attribute and is not the authoritative signal for SDProp protection; the correct approach is SID-based evaluation of membership in well-known protected groups (see [AdminSDHolder ACEs](#adminsdholder-aces)).
 5. **Creator Owner semantics**: ACEs with the `Creator Owner` SID in schema defaults are assumed to be replaced by the object owner at creation time, following standard AD behavior.
 
 ### Limitations

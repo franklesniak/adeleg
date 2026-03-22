@@ -493,11 +493,15 @@ The spec masks out read-only rights (`READ_CONTROL`, `ACTRL_DS_LIST`, `DS_LIST_O
 
 The spec suppresses deny ACEs for `Everyone` that deny `DELETE`, `DS_DELETE_CHILD`, and/or `DS_DELETE_TREE`. However, this suppression does not verify that the ACE only denies these rights — it checks if these rights are present but there could also be other denied rights in the same ACE. The revised spec should clarify whether the suppression applies only to ACEs that deny exclusively these rights, or also to ACEs that deny these rights among others.
 
-### 6.7. AdminSDHolder Matching Does Not Account for Stale adminCount — Consider `ActiveDirectorySecurity.AreAccessRulesProtected`
+### 6.7. AdminSDHolder Protection Must Use SID-Based Evaluation, Not `adminCount`
 
-The spec excludes AdminSDHolder-matching ACEs for objects with `adminCount != 0`. However, `adminCount` is notoriously stale in AD — it is typically present on objects that are or were members of protected groups but is not always cleared when an object is removed from such a group. This means formerly-protected objects that still have `adminCount=1` but are no longer in a protected group will have their ACEs incorrectly filtered. The revised spec should acknowledge this limitation and consider whether additional validation (e.g., checking actual group membership) is warranted.
+The spec excludes AdminSDHolder-matching ACEs for objects with `adminCount != 0`. However, `adminCount` is a diagnostic attribute — it is only set when SDProp actually modifies the security descriptor; it can be cleared or set arbitrarily, and it may remain null/0 even for SDProp-protected principals when the security descriptor already matches the AdminSDHolder template. This means: (1) formerly-protected objects that still have `adminCount=1` but are no longer in a protected group will have their ACEs incorrectly suppressed, and (2) genuinely protected principals with `adminCount` cleared or null will not have their ACEs suppressed when they should be.
 
-Additionally, the DACL inheritance protection check for AdminSDHolder-managed objects should use `ActiveDirectorySecurity.AreAccessRulesProtected` (see Section 1.5.18) rather than manually checking the `SE_DACL_PROTECTED` flag.
+The revised spec (new tool specification) replaces `adminCount`-based suppression entirely with **SID-based evaluation** of membership in well-known protected groups. Protected group SIDs are stable and cannot be renamed or localized, making this approach authoritative rather than heuristic.
+
+While `ActiveDirectorySecurity.AreAccessRulesProtected` (see Section 1.5.18) is useful for detecting whether DACL inheritance is blocked, it does not by itself determine whether an object is SDProp in-scope. An object may have inheritance blocked for reasons unrelated to AdminSDHolder (e.g., manual configuration), and a protected object may temporarily have inheritance unblocked (e.g., if an administrator restored inheritance manually before SDProp's next cycle). Therefore, `AreAccessRulesProtected` alone or in combination with `adminCount` is insufficient — SID-based membership evaluation is required.
+
+`adminCount` is retained in the data collection for optional informational findings (stale/orphaned `adminCount`, cleared `adminCount` on protected principals) but MUST NOT be used for suppression decisions.
 
 ---
 
@@ -700,9 +704,11 @@ The spec states that when computing inherited ACEs from schema defaults, `Creato
 
 For non-domain naming contexts (schema, configuration, application partitions), the spec uses the root domain SID as a fallback for "deleted trustee" detection using manual SID byte manipulation. As detailed in Section 1.5.19, .NET Framework 2.0 provides `SecurityIdentifier.AccountDomainSid` which returns the domain portion of a SID (strips the RID), or `null` for well-known SIDs with no domain component. The revised spec should define deleted trustee detection as: "For each unresolvable trustee SID, extract `sid.AccountDomainSid`. If it matches any known domain SID (not just the root domain), flag the ACE as a deleted trustee." This approach is both simpler and more correct — it checks all known domain SIDs, not just the root domain, which means SIDs from child domains in the schema/configuration partition will be correctly identified as deleted.
 
-### 12.4. `adminCount` Attribute Should Be Parsed as Integer via `SearchResult.Properties`
+### 12.4. `adminCount` Attribute Should Be Parsed as Integer and Not Used for Suppression
 
-The spec states that `adminCount` is checked via `adminCount != "0"`, defaulting to `"0"` if missing. Since `adminCount` is an INTEGER attribute in the AD schema, .NET Framework 2.0's `SearchResult.Properties["adminCount"]` returns it as an `int` (boxed in `object`), not as a string. The revised spec should define numeric handling: `int adminCount = result.Properties.Contains("adminCount") ? (int)result.Properties["adminCount"][0] : 0;` and treat any nonzero integer as indicating a protected object. This eliminates the fragile string comparison entirely.
+The spec states that `adminCount` is checked via `adminCount != "0"`, defaulting to `"0"` if missing. Since `adminCount` is an INTEGER attribute in the AD schema, .NET Framework 2.0's `SearchResult.Properties["adminCount"]` returns it as an `int` (boxed in `object`), not as a string. The revised spec (new tool specification) defines numeric handling: `int adminCount = result.Properties.Contains("adminCount") ? (int)result.Properties["adminCount"][0] : 0;`.
+
+However, per the corrected AdminSDHolder approach (see Section 6.7), `adminCount` MUST NOT be used for ACE suppression decisions regardless of how it is parsed. It is retained in the data collection solely for optional informational findings (stale/orphaned `adminCount`, cleared `adminCount` on protected principals). SDProp in-scope status is determined through SID-based membership evaluation, not `adminCount`.
 
 ### 12.5. Potential for Missed ACEs on Objects with Multiple Classes
 
@@ -891,7 +897,7 @@ The following resources should be classified as Tier 0 by default. Resources are
 | # | Identification Method | Identity | Rationale |
 |---|---|---|---|
 | 15 | DN = `<domainDN>` (the domain root object) | Domain root object | ACEs here can grant domain-wide permissions via inheritance |
-| 16 | DN = `CN=AdminSDHolder,CN=System,<domainDN>` | AdminSDHolder | SDProp periodically stamps this DACL onto objects marked as protected |
+| 16 | DN = `CN=AdminSDHolder,CN=System,<domainDN>` | AdminSDHolder | SDProp periodically stamps this DACL onto AdminSDHolder-protected (SDProp in-scope) principals |
 | 17 | DN = `OU=Domain Controllers,<domainDN>` | Domain Controllers OU | Contains all DC machine accounts |
 | 18 | DN = `CN=Users,<domainDN>` | Users container | Default location for privileged accounts |
 | 19 | DN = `CN=Schema,CN=Configuration,<forestRootDN>` | Schema partition root | Controls the AD schema |
