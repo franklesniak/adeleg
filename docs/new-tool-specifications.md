@@ -399,7 +399,7 @@ An object is treated as AdminSDHolder-protected (SDProp in-scope) if and only if
 
 If SDProp in-scope status cannot be determined reliably (due to permissions errors, data gaps, or other failures), the tool MUST **fail safe** and treat the object as **not protected for suppression purposes** (i.e., report its ACEs rather than suppress them).
 
-**Operator-configured additional suppression:** Separately from the authoritative SDProp in-scope definition above, the tool MUST support an operator-configurable list of additional SIDs whose ACEs should also be suppressed against the AdminSDHolder template (see the extension mechanism in Protected Set Data below). This is an explicit override for environments with non-standard SDProp configurations — it does not change the tool's SDProp in-scope determination, but adds additional SIDs to the suppression set. Objects matched only by this override list are not reported as SDProp in-scope in informational findings.
+**Operator-configured additional suppression:** Separately from the authoritative SDProp in-scope definition above, the tool MUST support an operator-configurable list of additional SIDs whose ACEs should also be suppressed against the AdminSDHolder template (see the extension mechanism in Protected Set Data below). This is an explicit override for environments with non-standard SDProp configurations — it does not change the tool's SDProp in-scope determination, but adds additional SIDs to the suppression set. Objects matched only by this override list are not treated or reported as SDProp in-scope in any SDProp-related reporting/telemetry described in this specification (including AdminSDHolder anomaly `Warning` rows).
 
 ##### Security principal scope
 
@@ -780,7 +780,7 @@ The CSV output has **7 columns**:
 | Column | Name | Description |
 | --- | --- | --- |
 | 1 | **Resource** | The location where the delegation or finding applies. Either a DN (e.g., `OU=Users,DC=example,DC=com`), a schema reference (e.g., `Schema: default security descriptor of class 'user'`), or `Global` for non-location-specific findings |
-| 2 | **Trustee** | The resolved name of the security principal (DN or `DOMAIN\Username`), or the raw SID string if unresolvable, or `Global` for location-level warnings |
+| 2 | **Trustee** | The resolved name of the security principal (DN or `DOMAIN\Username`), or the raw SID string if unresolvable, or `Global` for non-trustee-specific `Warning` rows |
 | 3 | **Trustee type** | One of: `User`, `Group`, `Computer`, `External`, or empty for non-trustee-specific rows (e.g., `Warning` rows where `Trustee` is `Global`) |
 | 4 | **Category** | Classification of the finding (see below) |
 | 5 | **Details** | Human-readable description of the permission or finding |

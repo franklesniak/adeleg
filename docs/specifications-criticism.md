@@ -501,7 +501,7 @@ The revised spec (new tool specification) replaces `adminCount`-based suppressio
 
 While `ActiveDirectorySecurity.AreAccessRulesProtected` (see Section 1.5.18) is useful for detecting whether DACL inheritance is blocked, it does not by itself determine whether an object is SDProp in-scope. An object may have inheritance blocked for reasons unrelated to AdminSDHolder (e.g., manual configuration), and a protected object may temporarily have inheritance unblocked (e.g., if an administrator restored inheritance manually before SDProp's next cycle). Therefore, `AreAccessRulesProtected` alone or in combination with `adminCount` is insufficient — SID-based membership evaluation is required.
 
-`adminCount` is retained in the data collection for optional informational findings (stale/orphaned `adminCount`, cleared `adminCount` on protected principals) but MUST NOT be used for suppression decisions.
+`adminCount` is retained in the data collection to support mandatory AdminSDHolder anomaly findings (e.g., stale/orphaned `adminCount`, cleared `adminCount` on protected principals), which MUST be emitted as `Warning`-severity CSV rows, but `adminCount` MUST NOT be used for suppression decisions.
 
 ---
 
@@ -708,7 +708,7 @@ For non-domain naming contexts (schema, configuration, application partitions), 
 
 The spec states that `adminCount` is checked via `adminCount != "0"`, defaulting to `"0"` if missing. Since `adminCount` is an INTEGER attribute in the AD schema, .NET Framework 2.0's `SearchResult.Properties["adminCount"]` returns it as an `int` (boxed in `object`), not as a string. The revised spec (new tool specification) defines numeric handling: `int adminCount = result.Properties.Contains("adminCount") ? (int)result.Properties["adminCount"][0] : 0;`.
 
-However, per the corrected AdminSDHolder approach (see Section 6.7), `adminCount` MUST NOT be used for ACE suppression decisions regardless of how it is parsed. It is retained in the data collection solely for optional informational findings (stale/orphaned `adminCount`, cleared `adminCount` on protected principals). SDProp in-scope status is determined through SID-based membership evaluation, not `adminCount`.
+However, per the corrected AdminSDHolder approach (see Section 6.7), `adminCount` MUST NOT be used for ACE suppression decisions regardless of how it is parsed. It is retained in the data collection to support AdminSDHolder anomaly detection findings (for example, stale/orphaned `adminCount` or cleared `adminCount` on protected principals), which the revised spec requires to be emitted as `Warning` CSV rows rather than treated as optional or informational-only output. SDProp in-scope status is determined through SID-based membership evaluation, not `adminCount`.
 
 ### 12.5. Potential for Missed ACEs on Objects with Multiple Classes
 
