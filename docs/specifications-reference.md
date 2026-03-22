@@ -11,7 +11,7 @@ This document describes the internal behavior of the ADeleg tool with a focus on
 ADeleg queries the following Active Directory partitions, discovered dynamically at runtime from the RootDSE:
 
 | Partition | RootDSE Attribute | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | Schema | `schemaNamingContext` | Retrieve class definitions, attribute definitions, default security descriptors |
 | Configuration | `configurationNamingContext` | Retrieve extended rights, control access rights, validated writes, property sets |
 | All naming contexts | `namingContexts` | Scan every object in each naming context (including schema, configuration, domain, and application partitions) for explicit (non-inherited) ACEs |
@@ -46,7 +46,7 @@ These values are stored in the `LdapConnection` struct (`winldap/src/connection.
 ADeleg is a Rust application that uses the Windows LDAP C API (`wldap32.dll`) via the `winldap` crate (local workspace crate). Key functions used:
 
 | Windows API Function | Purpose |
-|---|---|
+| --- | --- |
 | `ldap_initW` | Initialize connection handle |
 | `ldap_connect` | Establish TCP connection (2-second `LDAP_TIMEVAL`; overall connection attempt may exceed 2 seconds due to underlying DNS/mDNS/NBNS resolution layers that must fail before this timeout starts) |
 | `ldap_bind_sW` | Authenticate (Negotiate/SPNEGO by default; explicit credentials supported) |
@@ -59,7 +59,7 @@ The `LdapSearch` struct (`winldap/src/search.rs`) implements the `Iterator` trai
 ### LDAP Filters Used
 
 | Query Target | Filter | Attributes Requested |
-|---|---|---|
+| --- | --- | --- |
 | Schema classes | `(objectClass=classSchema)` | `schemaIDGUID`, `lDAPDisplayName`, `defaultSecurityDescriptor` |
 | Schema attributes | `(objectClass=attributeSchema)` | `schemaIDGUID`, `lDAPDisplayName` |
 | Property sets | `(&(objectClass=controlAccessRight)(validAccesses=48)(rightsGuid=*))` | `rightsGuid`, `displayName` |
@@ -182,6 +182,7 @@ if default_aces.iter().any(|default_ace| ace_equivalent(default_ace, ace)) {
 ```
 
 The `ace_equivalent()` function compares two ACEs while ignoring:
+
 - **Read-only access rights** (`IGNORED_ACCESS_RIGHTS`): `ADS_RIGHT_READ_CONTROL`, `ADS_RIGHT_ACTRL_DS_LIST`, `ADS_RIGHT_DS_LIST_OBJECT`, `ADS_RIGHT_DS_READ_PROP`
 - **Object inherit flag** (`IGNORED_ACE_FLAGS`): `OBJECT_INHERIT_ACE`. The source code comment (at `engine.rs:30`) states verbatim: `there is no "object" in Active Directory, only containers`. In Windows ACL terminology, `OBJECT_INHERIT_ACE` causes an ACE to be inherited by non-container (leaf) child objects, while `CONTAINER_INHERIT_ACE` causes inheritance to container child objects. Since Active Directory entries are all containers (OUs, domains, etc.) rather than leaf objects, the `OBJECT_INHERIT_ACE` flag has no practical effect in AD. The tool therefore masks out this flag (via bitwise AND with `!IGNORED_ACE_FLAGS`) before comparing ACEs in `ace_equivalent()`, so that two ACEs differing only in whether `OBJECT_INHERIT_ACE` is set are treated as equivalent
 
@@ -194,7 +195,7 @@ When computing inherited ACEs from schema defaults, if the parent ACE's trustee 
 ACEs for the following well-known SIDs are suppressed, since these principals already have inherent full control:
 
 | SID | Identity |
-|---|---|
+| --- | --- |
 | `S-1-5-10` | SELF |
 | `S-1-5-18` | Local System |
 | `S-1-5-20` | Network Service |
@@ -246,6 +247,7 @@ ACEs granting only `DS_CONTROL_ACCESS` for specific control access rights that d
 ### Ignored DACL Protected Flags
 
 DACL inheritance blocking is not reported as a warning for:
+
 - Objects of class `groupPolicyContainer` (GPOs block inheritance by design)
 - Objects with `adminCount != 0` (expected to have inheritance blocked as part of AdminSDHolder protection)
 - Specific well-known containers: `CN=AdminSDHolder,CN=System`, `CN=VolumeTable,CN=FileLinks,CN=System`, `CN=Keys`, `CN=WMIPolicy,CN=System`, `CN=SOM,CN=WMIPolicy,CN=System`
@@ -257,6 +259,7 @@ The file `builtin_delegations.json` (embedded at compile time) defines expected 
 ### RODC-Specific Filtering
 
 The tool suppresses several ACE patterns specific to Read-Only Domain Controllers (RODCs):
+
 - Change Password / Reset Password control access by an RODC on its secondary KrbTgt account
 - CREATE_CHILD on `nTDSDSA` objects by the RODC referenced from the server object, and DELETE on `nTDSDSA` objects only when the ACE has the `inherit_only` flag set
 - WRITE_PROP for `schedule` and `fromServer` attributes on `nTDSConnection` objects by the owning RODC
@@ -277,6 +280,7 @@ SID resolution is performed by `Engine::resolve_sid()` in `engine.rs` using a mu
 ### Cache Population
 
 The SID-to-display-name cache (`resolved_sid_to_dn`) is populated from multiple sources during the tool's operation:
+
 - **During the main scan**: When an object has an `objectSid` attribute, the behavior depends on whether the SID is domain-specific. For domain-specific SIDs (starting with `S-1-5-21-...`), the mapping from SID → DN (using the entry's DN) is directly inserted into the cache without calling `resolve_sid()`. For non-domain-specific SIDs (e.g., well-known SIDs found in `CN=ForeignSecurityPrincipals`), `resolve_sid()` is called first; only if it returns `None` is the SID → DN mapping inserted as a fallback.
 - **During local resolution**: When `LookupAccountSidLocalW` succeeds, the mapping from SID → `DOMAIN\Username` is stored in the cache. For non-domain-specific SIDs, this mapping is not overwritten later by the main scan (the main scan only inserts if `resolve_sid()` returns `None`, and a successful local resolution means it won't return `None`).
 - **During LDAP SID lookup**: When a `<SID=...>` LDAP search succeeds, the mapping from SID → DN is stored in the cache. Like local resolution, this mapping is preserved for non-domain-specific SIDs.
@@ -311,7 +315,7 @@ Each resolved SID is also mapped to a `PrincipalType` enum. The mapping depends 
 The `Engine::describe_ace()` method maps individual bits in the 32-bit access mask to human-readable descriptions. When `resolve_names` is `true` (the default for CLI), the following mappings apply:
 
 | Access Right Constant | Bit Value | Human-Readable Description |
-|---|---|---|
+| --- | --- | --- |
 | `ADS_RIGHT_DS_WRITE_PROP` | `0x20` | "Write attribute {name}" (attribute GUID match), "Write attributes of category {name}" (property set GUID match), or "Write all properties" (no match/no GUID) |
 | `ADS_RIGHT_DS_CONTROL_ACCESS` | `0x100` | "{Control access name}" or "Perform all application-specific operations" |
 | `ADS_RIGHT_DS_CREATE_CHILD` | `0x1` | "Create child {class} objects" or "Create child objects of any type" |
@@ -328,7 +332,7 @@ The `Engine::describe_ace()` method maps individual bits in the 32-bit access ma
 In **resolved-name mode** (the default), the `object_type` GUID is not resolved through a single global lookup order. Instead, the resolution is **conditional on which access right bit is set** in the access mask. Each access right checks only the schema categories relevant to it:
 
 | Access Right | GUID Resolution Order |
-|---|---|
+| --- | --- |
 | `WRITE_PROP` | attribute GUID → property set GUID → (fallback: "Write all properties") |
 | `CONTROL_ACCESS` | control access right GUID → (fallback: "Perform all application-specific operations") |
 | `CREATE_CHILD` | class GUID → (fallback: "Create child objects of any type") |
@@ -336,6 +340,7 @@ In **resolved-name mode** (the default), the `object_type` GUID is not resolved 
 | `DS_SELF` | validated write GUID → (fallback: "Perform all validated writes") |
 
 In **raw mode** (`--show-raw`), the GUID is resolved through a single sequential lookup across all schema categories in this order:
+
 1. Class GUID → class name (from `schema.class_guids`)
 2. Attribute GUID → attribute name (from `schema.attribute_guids`)
 3. Control access right GUID → control access name (from `schema.control_access_names`)
@@ -345,6 +350,7 @@ In **raw mode** (`--show-raw`), the GUID is resolved through a single sequential
 ### Inherited Object Type Resolution and Inheritance Scope
 
 When `resolve_names` is true and `container_inherit` is true, the `inherited_object_type` GUID is resolved against class GUIDs to determine which child object type the ACE applies to, and scope information is appended to the description:
+
 - "on all {class_name} child objects" if `inherited_object_type` resolves to a class
 - "on all child objects" otherwise (no `inherited_object_type` or unresolved GUID)
 - "and the container itself" is appended if `inherit_only` is false
@@ -362,27 +368,32 @@ When `--show-raw` is specified (`resolve_names` = false), access rights are show
 The pipeline from directory query to CSV output follows these steps:
 
 ### Step 1: Connection and Bootstrap
+
 - Establish LDAP connection (`LdapConnection::new`)
 - Read RootDSE for naming contexts and schema/configuration DNs
 - Enumerate domains from `CN=Partitions,{configurationNC}` to get domain SIDs and NetBIOS names
 
 ### Step 2: Schema Loading
+
 - Query all `classSchema` objects for class GUIDs and `defaultSecurityDescriptor` SDDL strings
 - Query all `attributeSchema` objects for attribute GUIDs
 - Query `controlAccessRight` objects for property sets (validAccesses=48), validated writes (validAccesses=8), and control access rights (validAccesses=256)
 
 ### Step 3: Delegation and Template Loading
+
 - Parse built-in delegations from `builtin_delegations.json` (embedded at compile time)
 - Optionally load user-provided templates (`--templates`) and delegations (`--delegations`) from JSON files
 - For each delegation, derive expected ACEs by resolving trustees and locations, and index them by SID → Location
 
 ### Step 4: Schema ACE Analysis (`get_schema_aces`)
+
 - For each `classSchema` with a `defaultSecurityDescriptor`:
   - Parse the SDDL string into a `SecurityDescriptor` for each domain
   - Filter the DACL ACEs through `is_ace_interesting()`
   - Store remaining ACEs as `orphan_aces` in an `AdelegResult`
 
 ### Step 5: Explicit ACE Analysis (`get_explicit_aces`)
+
 - For each naming context, perform a subtree search retrieving security descriptors
 - For each object:
   - Parse the security descriptor
@@ -391,6 +402,7 @@ The pipeline from directory query to CSV output follows these steps:
   - Build an `AdelegResult` with owner, DACL protection status, ACL canonicality, and orphan ACEs
 
 ### Step 6: Post-Processing
+
 1. **Memory optimization**: Remove records with no findings (no orphan ACEs, no owner issues, no warnings), but retain parent container records needed for CREATE_CHILD analysis
 2. **Deleted trustee detection**: For each naming context, determine the associated domain SID (or the root domain SID for non-domain naming contexts such as schema/configuration). Check if orphan ACE trustees whose SIDs share a prefix with that domain SID (via `shares_prefix_with(domain_sid.with_rid(0))`) can be resolved; if not, move them to `deleted_trustee`
 3. **KDS root key handling**: Suppress DACL protection warnings for KDS root key objects in the Configuration partition
@@ -398,6 +410,7 @@ The pipeline from directory query to CSV output follows these steps:
 5. **Parent object ACE suppression**: Remove ACEs whose trustees are parent objects (e.g., computers controlling their own BitLocker recovery objects)
 
 ### Step 7: Delegation Matching
+
 1. For each expected delegation (from builtin + user-defined), create or update an `AdelegResult` entry, initially marking all expected ACEs as "missing"
 2. For each location, match orphan ACEs against expected delegation ACEs using `ace_equivalent()`:
    - If a match is found, the ACE moves from `orphan_aces` to `aces_found` for that delegation
@@ -406,6 +419,7 @@ The pipeline from directory query to CSV output follows these steps:
 3. For built-in delegations, clear all `aces_missing` (do not flag missing built-in ACEs)
 
 ### Step 8: CSV Generation
+
 - Iterate over all `(DelegationLocation, Result<AdelegResult, AdelegError>)` entries
 - For each entry, write CSV records for: errors/warnings, owner, DACL protection, non-canonical ACL, deleted trustees, orphan ACEs, and matched delegations
 
@@ -422,7 +436,7 @@ CSV export is triggered by the `--csv <path>` command-line argument. If the path
 The CSV output has **5 columns**, written using the `csv` crate (version 1.1.6):
 
 | Column | Name | Description |
-|---|---|---|
+| --- | --- | --- |
 | 1 | **Resource** | The location where the delegation or finding applies. Either a DN (e.g., `OU=Users,DC=example,DC=com`) or a schema reference (e.g., `Schema: default security descriptor of class 'user'`) |
 | 2 | **Trustee** | The resolved name of the security principal (DN or `DOMAIN\Username`), or the raw SID string if unresolvable, or `Global` for location-level warnings |
 | 3 | **Trustee type** | One of: `User`, `Group`, `Computer`, `External` |
@@ -432,7 +446,7 @@ The CSV output has **5 columns**, written using the `csv` crate (version 1.1.6):
 ### Category Values
 
 | Category | Meaning |
-|---|---|
+| --- | --- |
 | `Owner` | The trustee owns the object, granting implicit full control |
 | `Warning` | A structural issue (unreadable SD, blocked DACL inheritance, non-canonical ACL) or a deleted trustee finding (the trustee no longer exists and should be cleaned up) |
 | `Allow ACE` | An explicit allow ACE that is not explained by any known delegation |
@@ -473,6 +487,7 @@ For each `(location, result)` pair in the scan results:
 ### Resource Representation
 
 Resources in the CSV `Resource` column are represented as:
+
 - **Distinguished Names (DNs)**: Full LDAP DNs like `CN=Users,DC=example,DC=com` for objects within any naming context (domain, configuration, schema, or application partitions).
 - **Schema references**: Formatted as `Schema: default security descriptor of class '{className}'` for default security descriptors in the schema.
 - **`Global`**: Used for non-location-specific findings.
@@ -480,6 +495,7 @@ Resources in the CSV `Resource` column are represented as:
 ### Location Resolution for Delegations
 
 Delegation definitions can use wildcard patterns for locations:
+
 - `DC=*` — expanded to each domain's DN in the forest
 - `CN=Configuration,DC=*` — expanded to the Configuration naming context
 - `CN=Schema,DC=*` — expanded to the Schema naming context
@@ -488,6 +504,7 @@ Delegation definitions can use wildcard patterns for locations:
 ### Handling of OUs, Containers, and Domain-Level Delegations
 
 The tool does not distinguish between OUs, containers, and other objects at the query level — all objects are scanned uniformly. The object's `objectClass` is used post-query to determine its most specific class (the last value in the multi-valued `objectClass` attribute), which influences:
+
 - Which schema default security descriptor to compare against
 - The class GUID used for CREATE_CHILD analysis
 - Specific filtering rules (e.g., `groupPolicyContainer` for DACL protection)
@@ -516,6 +533,7 @@ The tool does not distinguish between OUs, containers, and other objects at the 
 ### Non-Canonical ACLs
 
 A non-canonical ACL is detected when:
+
 1. An explicit ACE follows an inherited ACE, or
 2. A deny ACE follows an allow ACE among explicit ACEs
 
@@ -572,14 +590,17 @@ The `authz` crate parses callback ACE types (`ACCESS_ALLOWED_CALLBACK_ACE_TYPE`,
 ### Per-Location Processing Errors
 
 The error counter (displayed as `warning_unreadable_count` in the code) tracks all per-location `Err` entries in the results map, not just unreadable security descriptors. This includes:
+
 - Unreadable security descriptors (failed `nTSecurityDescriptor` attribute reads)
 - Missing or unreadable `objectClass` attributes (`AdelegError::LdapQueryFailed`)
 - Unparseable schema `defaultSecurityDescriptor` SDDL strings (`AdelegError::UnableToParseDefaultSecurityDescriptor`)
 
 By default, these errors are silently counted and a summary message is printed to stderr:
-```
+
+```text
 [!] {count} security descriptors could not be read, use --show-warning-unreadable to see where
 ```
+
 (Note: the message text says "security descriptors" but the count includes all per-location processing errors listed above.)
 
 With `--show-warning-unreadable`, each error generates a CSV record with category `Warning`.
