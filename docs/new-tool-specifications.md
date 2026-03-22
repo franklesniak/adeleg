@@ -781,7 +781,7 @@ The CSV output has **7 columns**:
 | --- | --- | --- |
 | 1 | **Resource** | The location where the delegation or finding applies. Either a DN (e.g., `OU=Users,DC=example,DC=com`), a schema reference (e.g., `Schema: default security descriptor of class 'user'`), or `Global` for non-location-specific findings |
 | 2 | **Trustee** | The resolved name of the security principal (DN or `DOMAIN\Username`), or the raw SID string if unresolvable, or `Global` for location-level warnings |
-| 3 | **Trustee type** | One of: `User`, `Group`, `Computer`, `External` |
+| 3 | **Trustee type** | One of: `User`, `Group`, `Computer`, `External`, or empty for non-trustee-specific rows (e.g., `Warning` rows where `Trustee` is `Global`) |
 | 4 | **Category** | Classification of the finding (see below) |
 | 5 | **Details** | Human-readable description of the permission or finding |
 | 6 | **Risk Level** | A risk classification for the row. One of: `Critical`, `High`, `Medium`, `Informational`, or empty (blank) for rows that do not match any risk rule. See Section 18 for the classification matrix. |

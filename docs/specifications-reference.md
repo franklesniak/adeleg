@@ -258,7 +258,7 @@ ACEs granting only `DS_CONTROL_ACCESS` for specific control access rights that d
 DACL inheritance blocking is not reported as a warning for:
 
 - Objects of class `groupPolicyContainer` (GPOs block inheritance by design)
-- Objects with `adminCount != 0` (used as a proxy for AdminSDHolder protection — see the [known limitation](#adminsdholder-aces) above)
+- Objects with non-zero `adminCount` (used as a proxy for AdminSDHolder protection — see the [known limitation](#adminsdholder-aces) above)
 - Specific well-known containers: `CN=AdminSDHolder,CN=System`, `CN=VolumeTable,CN=FileLinks,CN=System`, `CN=Keys`, `CN=WMIPolicy,CN=System`, `CN=SOM,CN=WMIPolicy,CN=System`
 
 ### Built-in Delegation Definitions
