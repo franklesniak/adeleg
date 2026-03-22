@@ -491,11 +491,11 @@ int adminCount = result.Properties.Contains("adminCount")
     : 0;
 ```
 
-However, `adminCount` MUST NOT be used for ACE suppression decisions. It is retained in the data collection solely for the optional informational findings described below.
+However, `adminCount` MUST NOT be used for ACE suppression decisions. It is retained in the data collection solely for the anomaly findings described below.
 
-##### Optional informational findings (recommended)
+##### AdminSDHolder anomaly findings
 
-The tool SHOULD emit AdminSDHolder anomaly findings as `Warning`-category CSV rows (see Section 10, Category Values). Each anomaly row uses the following format:
+The tool MUST emit AdminSDHolder anomaly findings as `Warning`-category CSV rows (see Section 10, Category Values). Each anomaly row uses the following format:
 
 | Column | Value |
 | --- | --- |
@@ -821,7 +821,7 @@ For each location/result pair in the scan results:
 3. **DACL protection**: One `Warning` record if `AreAccessRulesProtected` is `true` and the object is not in an excluded category.
 4. **Non-canonical ACL**: One `Warning` record if the ACL is not in canonical order. The offending ACE is described.
 5. **Deleted trustees**: One `Warning` record per ACE whose trustee no longer exists.
-6. **AdminSDHolder anomalies**: One `Warning` record per principal with an anomalous `adminCount` state (see Section 6, Optional informational findings).
+6. **AdminSDHolder anomalies**: One `Warning` record per principal with an anomalous `adminCount` state (see Section 6, AdminSDHolder anomaly findings).
 7. **Orphan ACEs**: One `Allow ACE` or `Deny ACE` record per unmatched ACE, with access rights described.
 8. **Delegations**: For each matched delegation (built-in only if `--show-builtin`):
    - One `Built-in` or `Delegation` record with the delegation description
