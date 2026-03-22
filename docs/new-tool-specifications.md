@@ -397,7 +397,18 @@ An object is treated as AdminSDHolder-protected (SDProp in-scope) if and only if
    - one of the protected groups/accounts itself (by `objectSid`), OR
    - a direct or transitive member of a protected group (nested membership).
 
-If SDProp in-scope status cannot be determined reliably (due to permissions errors, data gaps, or other failures), the tool MUST **fail safe** and treat the object as **not protected for suppression purposes** (i.e., report its ACEs rather than suppress them).
+SDProp in-scope evaluation is conceptually **tri-state**:
+
+1. **In-scope** — the tool has positively determined that the object is SDProp-protected per the rules above.
+2. **Not in-scope** — the tool has positively determined that the object is *not* SDProp-protected per the rules above.
+3. **Undetermined** — the tool cannot reliably determine SDProp status (for example, due to permissions errors, data gaps, or other failures).
+
+For **suppression behavior only**, if SDProp in-scope status is **Undetermined** the tool MUST **fail safe** and treat the object as **not protected for suppression purposes** (i.e., it MUST NOT suppress ACEs based on SDProp, and MUST report those ACEs).
+
+For **AdminSDHolder anomaly detection**, the tool:
+
+- MUST emit `AdminSDHolder anomaly: stale adminCount` or corresponding "cleared" anomalies **only** when SDProp status is explicitly **In-scope** or **Not in-scope**, and
+- MUST NOT emit any AdminSDHolder stale/cleared anomaly rows when SDProp status is **Undetermined**.
 
 **Operator-configured additional suppression:** Separately from the authoritative SDProp in-scope definition above, the tool MUST support an operator-configurable list of additional SIDs whose ACEs should also be suppressed against the AdminSDHolder template (see the extension mechanism in Protected Set Data below). This is an explicit override for environments with non-standard SDProp configurations — it does not change the tool's SDProp in-scope determination, but adds additional SIDs to the suppression set. Objects matched only by this override list are not treated or reported as SDProp in-scope in any SDProp-related reporting/telemetry described in this specification (including AdminSDHolder anomaly `Warning` rows).
 
@@ -511,6 +522,8 @@ Two anomaly conditions are defined:
 
 - **`AdminSDHolder anomaly: stale adminCount`** — `adminCount != 0` but the principal is NOT SDProp in-scope by SID/membership evaluation. This may indicate a formerly-protected principal whose `adminCount` was never cleared.
 - **`AdminSDHolder anomaly: cleared adminCount`** — The principal IS SDProp in-scope by SID/membership evaluation but `adminCount` is null/0. This may indicate that the security descriptor already matched the AdminSDHolder template when SDProp last ran, so `adminCount` was not set.
+
+These anomaly conditions MUST be evaluated only for principals whose SDProp in-scope status has been successfully determined by SID/membership evaluation. If SDProp in-scope evaluation is incomplete or indeterminate for a principal (for example, due to missing membership data or permission errors), the implementation MUST NOT emit any AdminSDHolder anomaly CSV row for that principal.
 
 Emission of these CSV rows MUST NOT depend on the `--verbose` level. Implementations MAY additionally log a summary count of AdminSDHolder anomalies to stderr when `--verbose >= 2`.
 
