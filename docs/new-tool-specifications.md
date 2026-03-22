@@ -437,7 +437,7 @@ Optional explicit protected accounts (enabled by default; configurable):
 | `S-1-5-21-<domain>-500` | Administrator |
 | `S-1-5-21-<domain>-502` | KRBTGT |
 
-> **Forest scope requirement:** In multi-domain forests, `<domain>` and `<root-domain>` may differ. The tool MUST determine the forest root domain SID to correctly evaluate `…-518` (Schema Admins) and `…-519` (Enterprise Admins).
+> **Forest scope requirement:** In multi-domain forests, `<domain>` and `<root-domain>` may differ. The tool MUST determine the forest root domain SID to correctly evaluate `…-518` (Schema Admins) and `…-519` (Enterprise Admins). The forest root domain DN is available via RootDSE's `rootDomainNamingContext` attribute (see Section 1); its SID is obtained by resolving that DN to a domain object and reading its `objectSid`. If the forest root domain SID cannot be determined, the tool MUST fail safe — Schema Admins and Enterprise Admins SIDs cannot be evaluated, and objects that would only be protected via those groups are treated as not protected (no suppression).
 
 ##### Protected set candidates (configuration or future baseline)
 

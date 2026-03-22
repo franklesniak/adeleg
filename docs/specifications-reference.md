@@ -235,7 +235,16 @@ Deny ACEs for `Everyone` that deny the `Change Password` control access right ar
 
 For objects with a non-zero `adminCount` (the code reads this integer attribute as a string and checks `adminCount != "0"`, defaulting to `"0"` if the attribute is missing or unreadable), ACEs that appear in the AdminSDHolder DACL are suppressed. This is because AdminSDHolder-protected (SDProp in-scope) objects have their security descriptors periodically stamped (copied) from AdminSDHolder by the SDProp process.
 
-> **Known limitation:** This tool uses `adminCount` as a proxy for AdminSDHolder/SDProp protection. However, `adminCount` is a diagnostic attribute — it is only set when SDProp actually modifies the security descriptor; it can be cleared or set arbitrarily, and it may remain null/0 even for SDProp-protected principals when the security descriptor already matches the AdminSDHolder template. The authoritative way to determine SDProp in-scope status is through **SID-based evaluation** of membership in well-known protected groups (whose SIDs are stable and cannot be renamed or localized). Using `adminCount` as the signal means: (1) an unprotected principal with `adminCount=1` (stale or manually set) will have its ACEs incorrectly suppressed, and (2) a genuinely protected principal with `adminCount` cleared or null will not have its ACEs suppressed when they should be. A future version of this tool should replace `adminCount`-based suppression with SID-based protected principal evaluation. See the new tool specification for the corrected approach.
+> **Known limitation:** This tool uses `adminCount` as a proxy for AdminSDHolder/SDProp protection.
+>
+> However, `adminCount` is a diagnostic attribute — it is only set when SDProp actually modifies the security descriptor; it can be cleared or set arbitrarily, and it may remain null/0 even for SDProp-protected principals when the security descriptor already matches the AdminSDHolder template.
+>
+> The authoritative way to determine SDProp in-scope status is through **SID-based evaluation** of membership in well-known protected groups (whose SIDs are stable and cannot be renamed or localized). Using `adminCount` as the signal means:
+>
+> 1. An unprotected principal with `adminCount=1` (stale or manually set) will have its ACEs incorrectly suppressed.
+> 2. A genuinely protected principal with `adminCount` cleared or null will not have its ACEs suppressed when they should be.
+>
+> A future version of this tool should replace `adminCount`-based suppression with SID-based protected principal evaluation. See the new tool specification for the corrected approach.
 
 ### Ignored Control Access Rights
 
