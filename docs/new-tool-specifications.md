@@ -514,7 +514,7 @@ The tool MUST emit AdminSDHolder anomaly findings as `Warning`-category CSV rows
 | **Trustee** | `Global` (these are object-level findings, not trustee-specific) |
 | **Trustee type** | empty |
 | **Category** | `Warning` |
-| **Details** | Prefixed with `AdminSDHolder anomaly: ` followed by a short description (see below) |
+| **Details** | Prefixed with `AdminSDHolder anomaly:` followed by a short description (see below) |
 | **Risk Level** | empty (consistent with all other Warning-category rows — see Section 18.4) |
 | **Current User Can Exploit** | empty |
 
@@ -620,7 +620,7 @@ Each resolved SID is mapped to one of four principal type classifications. The m
 
 **Unresolved SIDs:** If resolution fails entirely (cache miss, `Translate()` throws `IdentityNotMappedException`, and LDAP lookup fails), the raw SID string is used as the trustee name with type `External`.
 
-### Foreign Security Principals
+### Foreign Security Principals (SID Resolution)
 
 `SecurityIdentifier.Translate(typeof(NTAccount))` automatically resolves trusted-domain and well-known SIDs, regardless of where they appear in the directory. Foreign security principal objects in `CN=ForeignSecurityPrincipals` do not require special handling — `Translate()` does the right thing for cross-domain and cross-forest SIDs. Truly unresolvable SIDs (e.g., from unreachable forests) fall back to the raw SID string.
 
@@ -1022,7 +1022,7 @@ For multi-valued attributes:
 - ACEs referencing SIDs that belong to a known domain (determined via `SecurityIdentifier.AccountDomainSid` comparison against all known domain SIDs) and cannot be resolved are flagged as deleted trustees and reported with a "Warning" category.
 - Unresolvable SIDs from unknown domains or forests remain as orphan ACEs with raw SID trustee strings.
 
-### Foreign Security Principals
+### Foreign Security Principals (Special or Edge Case Handling)
 
 - Objects in `CN=ForeignSecurityPrincipals` are encountered during the subtree scan.
 - `SecurityIdentifier.Translate(typeof(NTAccount))` automatically resolves well-known and trusted-domain SIDs, regardless of their container. FSP-specific handling is not needed.
