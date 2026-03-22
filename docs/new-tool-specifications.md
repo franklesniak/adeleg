@@ -520,8 +520,8 @@ The tool MUST emit AdminSDHolder anomaly findings as `Warning`-category CSV rows
 
 Two anomaly conditions are defined:
 
-- **`AdminSDHolder anomaly: stale adminCount`** — `adminCount != 0` but the principal is NOT SDProp in-scope by SID/membership evaluation. This may indicate a formerly-protected principal whose `adminCount` was never cleared.
-- **`AdminSDHolder anomaly: cleared adminCount`** — The principal IS SDProp in-scope by SID/membership evaluation but `adminCount` is null/0. This may indicate that the security descriptor already matched the AdminSDHolder template when SDProp last ran, so `adminCount` was not set.
+- **`AdminSDHolder anomaly: stale adminCount`** — `adminCount != 0` but the principal is explicitly Not in-scope for SDProp by SID/membership evaluation. This may indicate a formerly-protected principal whose `adminCount` was never cleared.
+- **`AdminSDHolder anomaly: cleared adminCount`** — The principal is explicitly In-scope for SDProp by SID/membership evaluation but `adminCount` is null/0. This may indicate that the security descriptor already matched the AdminSDHolder template when SDProp last ran, so `adminCount` was not set.
 
 These anomaly conditions MUST be evaluated only for principals whose SDProp in-scope status has been successfully determined by SID/membership evaluation. If SDProp in-scope evaluation is incomplete or indeterminate for a principal (for example, due to missing membership data or permission errors), the implementation MUST NOT emit any AdminSDHolder anomaly CSV row for that principal.
 
