@@ -395,10 +395,11 @@ An object is treated as AdminSDHolder-protected (SDProp in-scope) if and only if
 1. The object is a **security principal**, AND
 2. The object is either:
    - one of the protected groups/accounts itself (by `objectSid`), OR
-   - a direct or transitive member of a protected group (nested membership), OR
-   - an explicitly protected account SID (if enabled; see Protected Set Data below).
+   - a direct or transitive member of a protected group (nested membership).
 
 If SDProp in-scope status cannot be determined reliably (due to permissions errors, data gaps, or other failures), the tool MUST **fail safe** and treat the object as **not protected for suppression purposes** (i.e., report its ACEs rather than suppress them).
+
+**Operator-configured additional suppression:** Separately from the authoritative SDProp in-scope definition above, the tool MUST support an operator-configurable list of additional SIDs whose ACEs should also be suppressed against the AdminSDHolder template (see the extension mechanism in Protected Set Data below). This is an explicit override for environments with non-standard SDProp configurations — it does not change the tool's SDProp in-scope determination, but adds additional SIDs to the suppression set. Objects matched only by this override list are not reported as SDProp in-scope in informational findings.
 
 ##### Security principal scope
 
@@ -426,18 +427,18 @@ Baseline protected set (minimum):
 | `S-1-5-32-549` | BUILTIN\Server Operators |
 | `S-1-5-32-550` | BUILTIN\Print Operators |
 | `S-1-5-32-551` | BUILTIN\Backup Operators |
-| `S-1-5-21-<domain>-512` | Domain Admins |
-| `S-1-5-21-<root-domain>-518` | Schema Admins (forest root domain) |
-| `S-1-5-21-<root-domain>-519` | Enterprise Admins (forest root domain) |
+| `{domainSID}-512` | Domain Admins |
+| `{forestRootDomainSID}-518` | Schema Admins (forest root domain) |
+| `{forestRootDomainSID}-519` | Enterprise Admins (forest root domain) |
 
 Optional explicit protected accounts (enabled by default; configurable):
 
 | SID | Identity |
 | --- | --- |
-| `S-1-5-21-<domain>-500` | Administrator |
-| `S-1-5-21-<domain>-502` | KRBTGT |
+| `{domainSID}-500` | Administrator |
+| `{domainSID}-502` | KRBTGT |
 
-> **Forest scope requirement:** In multi-domain forests, `<domain>` and `<root-domain>` may differ. The tool MUST determine the forest root domain SID to correctly evaluate `…-518` (Schema Admins) and `…-519` (Enterprise Admins). The forest root domain DN is available via RootDSE's `rootDomainNamingContext` attribute (see Section 1); its SID is obtained by resolving that DN to a domain object and reading its `objectSid`. If the forest root domain SID cannot be determined, the tool MUST fail safe — Schema Admins and Enterprise Admins SIDs cannot be evaluated, and objects that would only be protected via those groups are treated as not protected (no suppression).
+> **Forest scope requirement:** In multi-domain forests, `{domainSID}` and `{forestRootDomainSID}` may differ. The tool MUST determine the forest root domain SID (i.e., `{forestRootDomainSID}`) to correctly evaluate `…-518` (Schema Admins) and `…-519` (Enterprise Admins). The forest root domain DN is available via RootDSE's `rootDomainNamingContext` attribute (see Section 1); its SID is obtained by resolving that DN to a domain object and reading its `objectSid`. If the forest root domain SID cannot be determined, the tool MUST fail safe — Schema Admins and Enterprise Admins SIDs cannot be evaluated, and objects that would only be protected via those groups are treated as not protected (no suppression).
 
 ##### Protected set candidates (configuration or future baseline)
 
@@ -503,7 +504,7 @@ These findings help operations/security teams identify AdminSDHolder hygiene iss
 
 If suppression depends on comparing ACEs to the AdminSDHolder template DACL, the data collection MUST include:
 
-- `CN=AdminSDHolder,CN=System,<domain>` with its full `nTSecurityDescriptor` (or equivalent export fields).
+- `CN=AdminSDHolder,CN=System,{domainDN}` with its full `nTSecurityDescriptor` (or equivalent export fields).
 - Sufficient attributes to evaluate protected status: `objectSid`, group membership inputs (`tokenGroups` if used, or enough membership data to expand group nesting), `primaryGroupID` (if using `memberOf`-based expansion).
 - `computer` objects (needed if DC/RODC-related candidates are later enabled).
 - Disabled accounts (e.g., KRBTGT should not be filtered out).
